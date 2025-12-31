@@ -11,3 +11,6 @@ tutorials
 .prove
 /target/
 /.idea/
+*.tar.gz
+*.zip
+*.tgz
