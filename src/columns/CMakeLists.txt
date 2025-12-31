@@ -38,7 +38,7 @@ set (columns_SRCS Column.cpp Column.h
                    ColWorkDuration.cpp ColWorkDuration.h)
 
 add_library (columns STATIC ${columns_SRCS})
-target_link_libraries(columns taskchampion-cpp sqlite3)
+target_link_libraries(columns taskchampion-cpp)
 
 #SET(CMAKE_BUILD_TYPE gcov)
 #SET(CMAKE_CXX_FLAGS_GCOV "--coverage")

@@ -42,20 +42,6 @@ This guide will help you build and test Taskwarrior from source before making ch
    sudo dnf install libuuid-devel
    ```
 
-4. **libsqlite3-dev** (required for work intervals feature)
-   ```bash
-   # Ubuntu/Debian
-   sudo apt-get install libsqlite3-dev
-   
-   # Fedora/RHEL
-   sudo dnf install sqlite-devel
-   
-   # macOS (with Homebrew)
-   brew install sqlite
-   
-   # Arch Linux
-   sudo pacman -S sqlite
-   ```
 
 4. **Rust 1.64.0 or higher**
    ```bash

@@ -11,6 +11,8 @@ crate-type = ["staticlib"]
 [dependencies]
 taskchampion = "=2.0.2"
 cxx = "1.0.133"
+rusqlite = { version = "0.32", features = ["bundled"] }
+anyhow = "1.0"
 
 [features]
 # use native CA roots, instead of bundled

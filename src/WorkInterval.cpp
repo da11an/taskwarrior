@@ -32,8 +32,8 @@
 #include <FS.h>
 #include <format.h>
 #include <shared.h>
+#include <taskchampion-cpp/lib.h>
 
-#include <sqlite3.h>
 #include <cstring>
 #include <sstream>
 
@@ -47,10 +47,9 @@ std::string WorkInterval::get_db_path() {
     return _db_path;
   }
 
-  // Get database path from Context
-  // Database is at {data.location}/taskchampion.sqlite3
+  // Get database directory from Context (same as TaskChampion uses)
   std::string data_location = Context::getContext().data_dir._data;
-  _db_path = format("{1}/taskchampion.sqlite3", data_location);
+  _db_path = data_location;  // Store directory, not full path
   return _db_path;
 }
 
@@ -62,142 +61,21 @@ void WorkInterval::initialize(const std::string& db_path) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-bool WorkInterval::table_exists() {
-  sqlite3* db = nullptr;
-  std::string db_path = get_db_path();
-
-  int rc = sqlite3_open_v2(db_path.c_str(), &db,
-                           SQLITE_OPEN_READONLY, nullptr);
-  if (rc != SQLITE_OK) {
-    // Database might not exist yet, that's okay
-    if (db) sqlite3_close(db);
-    return false;
-  }
-
-  // Check if table exists
-  const char* sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='work_intervals';";
-  sqlite3_stmt* stmt = nullptr;
-  rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
-
-  bool exists = false;
-  if (rc == SQLITE_OK) {
-    rc = sqlite3_step(stmt);
-    exists = (rc == SQLITE_ROW);
-    sqlite3_finalize(stmt);
-  }
-
-  sqlite3_close(db);
-  return exists;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-void WorkInterval::create_table() {
-  sqlite3* db = nullptr;
-  std::string db_path = get_db_path();
-
-  int rc = sqlite3_open_v2(db_path.c_str(), &db,
-                           SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
-  if (rc != SQLITE_OK) {
-    std::string error = format("Cannot open database: {1}", sqlite3_errmsg(db));
-    if (db) sqlite3_close(db);
-    throw error;
-  }
-
-  const char* sql =
-      "CREATE TABLE IF NOT EXISTS work_intervals ("
-      "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-      "    task_uuid TEXT NOT NULL,"
-      "    event_type TEXT NOT NULL,"
-      "    timestamp INTEGER NOT NULL,"
-      "    interval_id INTEGER,"
-      "    created_at INTEGER NOT NULL"
-      ");"
-      "CREATE INDEX IF NOT EXISTS idx_work_intervals_task_uuid ON work_intervals(task_uuid);"
-      "CREATE INDEX IF NOT EXISTS idx_work_intervals_timestamp ON work_intervals(timestamp);"
-      "CREATE INDEX IF NOT EXISTS idx_work_intervals_interval_id ON work_intervals(interval_id);";
-
-  char* errmsg = nullptr;
-  rc = sqlite3_exec(db, sql, nullptr, nullptr, &errmsg);
-
-  if (rc != SQLITE_OK) {
-    std::string error = format("Cannot create work_intervals table: {1}", errmsg ? errmsg : "unknown error");
-    sqlite3_free(errmsg);
-    sqlite3_close(db);
-    throw error;
-  }
-
-  sqlite3_close(db);
-}
-
-////////////////////////////////////////////////////////////////////////////////
 void WorkInterval::ensure_table_exists() {
-  if (!table_exists()) {
-    create_table();
+  std::string taskdb_dir = get_db_path();
+  try {
+    tc::work_interval_initialize(taskdb_dir);
+  } catch (const std::exception& e) {
+    std::string error = format("Cannot initialize work intervals table: {1}", e.what());
+    throw error;
   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 int WorkInterval::get_next_interval_id(const std::string& task_uuid) {
-  ensure_table_exists();
-
-  sqlite3* db = nullptr;
-  std::string db_path = get_db_path();
-
-  int rc = sqlite3_open_v2(db_path.c_str(), &db,
-                           SQLITE_OPEN_READWRITE, nullptr);
-  if (rc != SQLITE_OK) {
-    std::string error = format("Cannot open database: {1}", sqlite3_errmsg(db));
-    if (db) sqlite3_close(db);
-    throw error;
-  }
-
-  // Get the maximum interval_id for this task, or 0 if none exists
-  const char* sql = "SELECT MAX(interval_id) FROM work_intervals WHERE task_uuid = ?;";
-  sqlite3_stmt* stmt = nullptr;
-  rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
-
-  int next_id = 1;
-  if (rc == SQLITE_OK) {
-    sqlite3_bind_text(stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
-    rc = sqlite3_step(stmt);
-    if (rc == SQLITE_ROW) {
-      int max_id = sqlite3_column_int(stmt, 0);
-      if (max_id > 0) {
-        // Check if there's an open interval (start without stop/done)
-        const char* check_sql =
-            "SELECT COUNT(*) FROM work_intervals "
-            "WHERE task_uuid = ? AND interval_id = ? AND event_type = 'start' "
-            "AND interval_id NOT IN ("
-            "  SELECT interval_id FROM work_intervals "
-            "  WHERE task_uuid = ? AND interval_id = ? AND event_type IN ('stop', 'done')"
-            ");";
-        sqlite3_stmt* check_stmt = nullptr;
-        int check_rc = sqlite3_prepare_v2(db, check_sql, -1, &check_stmt, nullptr);
-        if (check_rc == SQLITE_OK) {
-          sqlite3_bind_text(check_stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
-          sqlite3_bind_int(check_stmt, 2, max_id);
-          sqlite3_bind_text(check_stmt, 3, task_uuid.c_str(), -1, SQLITE_STATIC);
-          sqlite3_bind_int(check_stmt, 4, max_id);
-          check_rc = sqlite3_step(check_stmt);
-          if (check_rc == SQLITE_ROW) {
-            int open_count = sqlite3_column_int(check_stmt, 0);
-            if (open_count == 0) {
-              // Last interval is closed, use next ID
-              next_id = max_id + 1;
-            } else {
-              // Last interval is still open, reuse the ID
-              next_id = max_id;
-            }
-          }
-          sqlite3_finalize(check_stmt);
-        }
-      }
-    }
-    sqlite3_finalize(stmt);
-  }
-
-  sqlite3_close(db);
-  return next_id;
+  // This method is no longer needed - interval_id is determined in Rust
+  // Keeping for API compatibility but it's not used
+  return 1;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -206,154 +84,13 @@ void WorkInterval::log_event(const std::string& task_uuid,
                              time_t timestamp) {
   ensure_table_exists();
 
-  sqlite3* db = nullptr;
-  std::string db_path = get_db_path();
-
-  int rc = sqlite3_open_v2(db_path.c_str(), &db,
-                           SQLITE_OPEN_READWRITE, nullptr);
-  if (rc != SQLITE_OK) {
-    std::string error = format("Cannot open database: {1}", sqlite3_errmsg(db));
-    if (db) sqlite3_close(db);
+  std::string taskdb_dir = get_db_path();
+  try {
+    tc::work_interval_log_event(taskdb_dir, task_uuid, event_type, static_cast<int64_t>(timestamp));
+  } catch (const std::exception& e) {
+    std::string error = format("Cannot log work interval: {1}", e.what());
     throw error;
   }
-
-  // Determine interval_id
-  int interval_id = 0;
-  if (event_type == "start") {
-    // Get the maximum interval_id for this task, or 0 if none exists
-    const char* max_sql = "SELECT MAX(interval_id) FROM work_intervals WHERE task_uuid = ?;";
-    sqlite3_stmt* stmt = nullptr;
-    rc = sqlite3_prepare_v2(db, max_sql, -1, &stmt, nullptr);
-    if (rc == SQLITE_OK) {
-      sqlite3_bind_text(stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
-      rc = sqlite3_step(stmt);
-      if (rc == SQLITE_ROW) {
-        int max_id = sqlite3_column_int(stmt, 0);
-        // Check if there's an open interval (start without stop/done)
-        if (max_id > 0) {
-          const char* check_sql =
-              "SELECT COUNT(*) FROM work_intervals "
-              "WHERE task_uuid = ? AND interval_id = ? AND event_type = 'start' "
-              "AND interval_id NOT IN ("
-              "  SELECT interval_id FROM work_intervals "
-              "  WHERE task_uuid = ? AND interval_id = ? AND event_type IN ('stop', 'done')"
-              ");";
-          sqlite3_stmt* check_stmt = nullptr;
-          int check_rc = sqlite3_prepare_v2(db, check_sql, -1, &check_stmt, nullptr);
-          if (check_rc == SQLITE_OK) {
-            sqlite3_bind_text(check_stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_int(check_stmt, 2, max_id);
-            sqlite3_bind_text(check_stmt, 3, task_uuid.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_int(check_stmt, 4, max_id);
-            check_rc = sqlite3_step(check_stmt);
-            if (check_rc == SQLITE_ROW) {
-              int open_count = sqlite3_column_int(check_stmt, 0);
-              if (open_count == 0) {
-                // Last interval is closed, use next ID
-                interval_id = max_id + 1;
-              } else {
-                // Last interval is still open, reuse the ID
-                interval_id = max_id;
-              }
-            }
-            sqlite3_finalize(check_stmt);
-          }
-        } else {
-          interval_id = 1;
-        }
-      } else {
-        interval_id = 1;
-      }
-      sqlite3_finalize(stmt);
-    } else {
-      interval_id = 1;  // Default to 1 if query fails
-    }
-  } else if (event_type == "stop" || event_type == "done") {
-    // Find the most recent open interval (start without stop/done)
-    // Simple approach: get the latest start event's interval_id
-    const char* find_sql =
-        "SELECT interval_id FROM work_intervals "
-        "WHERE task_uuid = ? AND event_type = 'start' "
-        "ORDER BY timestamp DESC LIMIT 1;";
-    sqlite3_stmt* stmt = nullptr;
-    rc = sqlite3_prepare_v2(db, find_sql, -1, &stmt, nullptr);
-    if (rc == SQLITE_OK) {
-      sqlite3_bind_text(stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
-      rc = sqlite3_step(stmt);
-      if (rc == SQLITE_ROW) {
-        interval_id = sqlite3_column_int(stmt, 0);
-        // Check if this interval already has a stop/done
-        const char* check_sql =
-            "SELECT COUNT(*) FROM work_intervals "
-            "WHERE task_uuid = ? AND interval_id = ? AND event_type IN ('stop', 'done');";
-        sqlite3_stmt* check_stmt = nullptr;
-        int check_rc = sqlite3_prepare_v2(db, check_sql, -1, &check_stmt, nullptr);
-        if (check_rc == SQLITE_OK) {
-          sqlite3_bind_text(check_stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
-          sqlite3_bind_int(check_stmt, 2, interval_id);
-          check_rc = sqlite3_step(check_stmt);
-          if (check_rc == SQLITE_ROW) {
-            int count = sqlite3_column_int(check_stmt, 0);
-            if (count > 0) {
-              // This interval is already closed, get next ID
-              interval_id = 0;
-            }
-          }
-          sqlite3_finalize(check_stmt);
-        }
-      }
-      sqlite3_finalize(stmt);
-    }
-    // If no open interval found, use the latest interval_id + 1
-    if (interval_id == 0) {
-      const char* max_sql = "SELECT MAX(interval_id) FROM work_intervals WHERE task_uuid = ?;";
-      sqlite3_stmt* max_stmt = nullptr;
-      rc = sqlite3_prepare_v2(db, max_sql, -1, &max_stmt, nullptr);
-      if (rc == SQLITE_OK) {
-        sqlite3_bind_text(max_stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
-        rc = sqlite3_step(max_stmt);
-        if (rc == SQLITE_ROW) {
-          int max_id = sqlite3_column_int(max_stmt, 0);
-          interval_id = max_id > 0 ? max_id + 1 : 1;
-        } else {
-          interval_id = 1;
-        }
-        sqlite3_finalize(max_stmt);
-      } else {
-        interval_id = 1;
-      }
-    }
-  }
-
-  // Insert the event
-  const char* insert_sql =
-      "INSERT INTO work_intervals (task_uuid, event_type, timestamp, interval_id, created_at) "
-      "VALUES (?, ?, ?, ?, ?);";
-  sqlite3_stmt* stmt = nullptr;
-  rc = sqlite3_prepare_v2(db, insert_sql, -1, &stmt, nullptr);
-
-  if (rc == SQLITE_OK) {
-    sqlite3_bind_text(stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 2, event_type.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(timestamp));
-    sqlite3_bind_int(stmt, 4, interval_id);
-    sqlite3_bind_int64(stmt, 5, static_cast<sqlite3_int64>(time(nullptr)));
-
-    rc = sqlite3_step(stmt);
-    if (rc != SQLITE_DONE) {
-      std::string error = format("Cannot insert work interval: {1}", sqlite3_errmsg(db));
-      sqlite3_finalize(stmt);
-      sqlite3_close(db);
-      throw error;
-    }
-    sqlite3_finalize(stmt);
-  } else {
-    std::string error = format("Cannot prepare insert statement: {1}", sqlite3_errmsg(db));
-    sqlite3_close(db);
-    throw error;
-  }
-
-  sqlite3_close(db);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -361,75 +98,27 @@ std::vector<Interval> WorkInterval::get_intervals(const std::string& task_uuid) 
   ensure_table_exists();
 
   std::vector<Interval> intervals;
-  sqlite3* db = nullptr;
-  std::string db_path = get_db_path();
-
-  int rc = sqlite3_open_v2(db_path.c_str(), &db,
-                           SQLITE_OPEN_READONLY, nullptr);
-  if (rc != SQLITE_OK) {
-    if (db) sqlite3_close(db);
-    return intervals;  // Return empty on error
-  }
-
-  // Query for completed intervals (start + stop/done pairs)
-  const char* sql =
-      "SELECT start.timestamp, end.timestamp, end.event_type, start.interval_id "
-      "FROM work_intervals start "
-      "JOIN work_intervals end ON start.interval_id = end.interval_id AND start.task_uuid = end.task_uuid "
-      "WHERE start.task_uuid = ? "
-      "  AND start.event_type = 'start' "
-      "  AND end.event_type IN ('stop', 'done') "
-      "ORDER BY start.timestamp ASC;";
-
-  sqlite3_stmt* stmt = nullptr;
-  rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
-
-  if (rc == SQLITE_OK) {
-    sqlite3_bind_text(stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
-    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+  std::string taskdb_dir = get_db_path();
+  
+  try {
+    rust::Vec<tc::WorkInterval> rust_intervals = tc::work_interval_get_intervals(taskdb_dir, task_uuid);
+    
+    for (size_t i = 0; i < rust_intervals.size(); ++i) {
+      const auto& ri = rust_intervals[i];
       Interval interval;
-      interval.task_uuid = task_uuid;
-      interval.start_time = static_cast<time_t>(sqlite3_column_int64(stmt, 0));
-      interval.end_time = static_cast<time_t>(sqlite3_column_int64(stmt, 1));
-      const unsigned char* event_type = sqlite3_column_text(stmt, 2);
-      interval.event_type = event_type ? reinterpret_cast<const char*>(event_type) : "";
-      interval.interval_id = sqlite3_column_int(stmt, 3);
-      interval.is_open = false;
+      interval.task_uuid = std::string(ri.task_uuid.data(), ri.task_uuid.size());
+      interval.start_time = static_cast<time_t>(ri.start_time);
+      interval.end_time = static_cast<time_t>(ri.end_time);
+      interval.event_type = std::string(ri.event_type.data(), ri.event_type.size());
+      interval.interval_id = ri.interval_id;
+      interval.is_open = ri.is_open;
       intervals.push_back(interval);
     }
-    sqlite3_finalize(stmt);
+  } catch (const std::exception& e) {
+    // Return empty on error
+    return intervals;
   }
-
-  // Query for open intervals (start events without stop/done)
-  const char* open_sql =
-      "SELECT start.timestamp, start.interval_id "
-      "FROM work_intervals start "
-      "LEFT JOIN work_intervals end ON start.interval_id = end.interval_id AND start.task_uuid = end.task_uuid "
-      "  AND end.event_type IN ('stop', 'done') "
-      "WHERE start.task_uuid = ? "
-      "  AND start.event_type = 'start' "
-      "  AND end.id IS NULL "
-      "ORDER BY start.timestamp ASC;";
-
-  sqlite3_stmt* open_stmt = nullptr;
-  rc = sqlite3_prepare_v2(db, open_sql, -1, &open_stmt, nullptr);
-
-  if (rc == SQLITE_OK) {
-    sqlite3_bind_text(open_stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
-    while ((rc = sqlite3_step(open_stmt)) == SQLITE_ROW) {
-      Interval interval;
-      interval.task_uuid = task_uuid;
-      interval.start_time = static_cast<time_t>(sqlite3_column_int64(open_stmt, 0));
-      interval.end_time = time(nullptr);  // Use current time for open intervals
-      interval.event_type = "";  // No event type for open intervals
-      interval.interval_id = sqlite3_column_int(open_stmt, 1);
-      interval.is_open = true;
-      intervals.push_back(interval);
-    }
-    sqlite3_finalize(open_stmt);
-  }
-
-  sqlite3_close(db);
+  
   return intervals;
 }
 
@@ -439,80 +128,28 @@ std::vector<Interval> WorkInterval::get_intervals_by_date(time_t start_time,
   ensure_table_exists();
 
   std::vector<Interval> intervals;
-  sqlite3* db = nullptr;
-  std::string db_path = get_db_path();
-
-  int rc = sqlite3_open_v2(db_path.c_str(), &db,
-                           SQLITE_OPEN_READONLY, nullptr);
-  if (rc != SQLITE_OK) {
-    if (db) sqlite3_close(db);
-    return intervals;  // Return empty on error
-  }
-
-  // Query for completed intervals within date range
-  // Note: Messages are stored as annotations, not in work_intervals
-  const char* sql =
-      "SELECT start.task_uuid, start.timestamp, end.timestamp, end.event_type, start.interval_id "
-      "FROM work_intervals start "
-      "JOIN work_intervals end ON start.interval_id = end.interval_id AND start.task_uuid = end.task_uuid "
-      "WHERE start.timestamp >= ? AND start.timestamp <= ? "
-      "  AND start.event_type = 'start' "
-      "  AND end.event_type IN ('stop', 'done') "
-      "ORDER BY start.timestamp ASC;";
-
-  sqlite3_stmt* stmt = nullptr;
-  rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
-
-  if (rc == SQLITE_OK) {
-    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(start_time));
-    sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(end_time));
-    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+  std::string taskdb_dir = get_db_path();
+  
+  try {
+    rust::Vec<tc::WorkInterval> rust_intervals = tc::work_interval_get_intervals_by_date(
+        taskdb_dir, static_cast<int64_t>(start_time), static_cast<int64_t>(end_time));
+    
+    for (size_t i = 0; i < rust_intervals.size(); ++i) {
+      const auto& ri = rust_intervals[i];
       Interval interval;
-      const unsigned char* uuid = sqlite3_column_text(stmt, 0);
-      interval.task_uuid = uuid ? reinterpret_cast<const char*>(uuid) : "";
-      interval.start_time = static_cast<time_t>(sqlite3_column_int64(stmt, 1));
-      interval.end_time = static_cast<time_t>(sqlite3_column_int64(stmt, 2));
-      const unsigned char* event_type = sqlite3_column_text(stmt, 3);
-      interval.event_type = event_type ? reinterpret_cast<const char*>(event_type) : "";
-      interval.interval_id = sqlite3_column_int(stmt, 4);
-      interval.is_open = false;
+      interval.task_uuid = std::string(ri.task_uuid.data(), ri.task_uuid.size());
+      interval.start_time = static_cast<time_t>(ri.start_time);
+      interval.end_time = static_cast<time_t>(ri.end_time);
+      interval.event_type = std::string(ri.event_type.data(), ri.event_type.size());
+      interval.interval_id = ri.interval_id;
+      interval.is_open = ri.is_open;
       intervals.push_back(interval);
     }
-    sqlite3_finalize(stmt);
+  } catch (const std::exception& e) {
+    // Return empty on error
+    return intervals;
   }
-
-  // Query for open intervals within date range
-  const char* open_sql =
-      "SELECT start.task_uuid, start.timestamp, start.interval_id "
-      "FROM work_intervals start "
-      "LEFT JOIN work_intervals end ON start.interval_id = end.interval_id AND start.task_uuid = end.task_uuid "
-      "  AND end.event_type IN ('stop', 'done') "
-      "WHERE start.timestamp >= ? AND start.timestamp <= ? "
-      "  AND start.event_type = 'start' "
-      "  AND end.id IS NULL "
-      "ORDER BY start.timestamp ASC;";
-
-  sqlite3_stmt* open_stmt = nullptr;
-  rc = sqlite3_prepare_v2(db, open_sql, -1, &open_stmt, nullptr);
-
-  if (rc == SQLITE_OK) {
-    sqlite3_bind_int64(open_stmt, 1, static_cast<sqlite3_int64>(start_time));
-    sqlite3_bind_int64(open_stmt, 2, static_cast<sqlite3_int64>(end_time));
-    while ((rc = sqlite3_step(open_stmt)) == SQLITE_ROW) {
-      Interval interval;
-      const unsigned char* uuid = sqlite3_column_text(open_stmt, 0);
-      interval.task_uuid = uuid ? reinterpret_cast<const char*>(uuid) : "";
-      interval.start_time = static_cast<time_t>(sqlite3_column_int64(open_stmt, 1));
-      interval.end_time = time(nullptr);  // Use current time for open intervals
-      interval.event_type = "";  // No event type for open intervals
-      interval.interval_id = sqlite3_column_int(open_stmt, 2);
-      interval.is_open = true;
-      intervals.push_back(interval);
-    }
-    sqlite3_finalize(open_stmt);
-  }
-
-  sqlite3_close(db);
+  
   return intervals;
 }
 

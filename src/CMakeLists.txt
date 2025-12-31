@@ -29,7 +29,7 @@ add_library (task STATIC CLI2.cpp
                   rules.cpp
                   sort.cpp
                   util.cpp)
-target_link_libraries(task taskchampion-cpp sqlite3)
+target_link_libraries(task taskchampion-cpp)
 
 add_library (libshared STATIC libshared/src/Color.cpp
                        libshared/src/Configuration.cpp

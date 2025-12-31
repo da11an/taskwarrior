@@ -2,6 +2,8 @@ use cxx::CxxString;
 use std::path::PathBuf;
 use std::pin::Pin;
 use taskchampion as tc;
+use rusqlite::Connection;
+use anyhow::anyhow;
 
 // All Taskchampion FFI is contained in this module, due to issues with cxx and multiple modules
 // such as https://github.com/dtolnay/cxx/issues/1323.
@@ -207,6 +209,40 @@ mod ffi {
             encryption_secret: &CxxString,
             avoid_snapshots: bool,
         ) -> Result<()>;
+    }
+
+    // --- Work Intervals
+
+    extern "Rust" {
+        /// Initialize the work_intervals table in the database
+        fn work_interval_initialize(taskdb_dir: String) -> Result<()>;
+
+        /// Log a work interval event (start, stop, or done)
+        fn work_interval_log_event(
+            taskdb_dir: String,
+            task_uuid: String,
+            event_type: String,
+            timestamp: i64,
+        ) -> Result<()>;
+
+        /// Get all intervals for a specific task (by UUID)
+        fn work_interval_get_intervals(taskdb_dir: String, task_uuid: String) -> Result<Vec<WorkInterval>>;
+
+        /// Get all intervals within a date range
+        fn work_interval_get_intervals_by_date(
+            taskdb_dir: String,
+            start_time: i64,
+            end_time: i64,
+        ) -> Result<Vec<WorkInterval>>;
+    }
+
+    struct WorkInterval {
+        task_uuid: String,
+        start_time: i64,
+        end_time: i64,
+        event_type: String,
+        interval_id: i32,
+        is_open: bool,
     }
 
     // --- OptionTaskData
@@ -842,6 +878,253 @@ impl WorkingSet {
         }
         res
     }
+}
+
+// --- Work Intervals
+
+fn get_db_path(taskdb_dir: String) -> PathBuf {
+    PathBuf::from(&taskdb_dir).join("taskchampion.sqlite3")
+}
+
+fn work_interval_initialize(taskdb_dir: String) -> Result<(), CppError> {
+    let db_path = get_db_path(taskdb_dir);
+    let conn = Connection::open(&db_path).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS work_intervals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_uuid TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            interval_id INTEGER,
+            created_at INTEGER NOT NULL
+        )",
+        [],
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_work_intervals_task_uuid ON work_intervals(task_uuid)",
+        [],
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_work_intervals_timestamp ON work_intervals(timestamp)",
+        [],
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_work_intervals_interval_id ON work_intervals(interval_id)",
+        [],
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    Ok(())
+}
+
+fn work_interval_log_event(
+    taskdb_dir: String,
+    task_uuid: String,
+    event_type: String,
+    timestamp: i64,
+) -> Result<(), CppError> {
+    let db_path = get_db_path(taskdb_dir.clone());
+    let conn = Connection::open(&db_path).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    // Ensure table exists
+    work_interval_initialize(taskdb_dir.clone())?;
+    
+    // Determine interval_id
+    let interval_id = if event_type == "start" {
+        // For start events, get the next interval_id for this task
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(MAX(interval_id), 0) + 1 FROM work_intervals WHERE task_uuid = ?"
+        ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+        match stmt.query_row([&task_uuid], |row| row.get::<_, i32>(0)) {
+            Ok(id) => id,
+            Err(_) => 1,
+        }
+    } else {
+        // For stop/done events, find the most recent open interval (start without stop/done)
+        let mut stmt = conn.prepare(
+            "SELECT start.interval_id
+             FROM work_intervals start
+             LEFT JOIN work_intervals end ON start.interval_id = end.interval_id 
+                 AND start.task_uuid = end.task_uuid 
+                 AND end.event_type IN ('stop', 'done')
+             WHERE start.task_uuid = ? 
+               AND start.event_type = 'start'
+               AND end.id IS NULL
+             ORDER BY start.timestamp DESC
+             LIMIT 1"
+        ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+        
+        match stmt.query_row([&task_uuid], |row| row.get::<_, i32>(0)) {
+            Ok(id) => id,
+            Err(_) => {
+                // No open interval found, create new one
+                let mut stmt2 = conn.prepare(
+                    "SELECT COALESCE(MAX(interval_id), 0) + 1 FROM work_intervals WHERE task_uuid = ?"
+                ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+                match stmt2.query_row([&task_uuid], |row| row.get::<_, i32>(0)) {
+                    Ok(id) => id,
+                    Err(_) => 1,
+                }
+            }
+        }
+    };
+    
+    // Insert the event
+    conn.execute(
+        "INSERT INTO work_intervals (task_uuid, event_type, timestamp, interval_id, created_at) 
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![task_uuid, event_type, timestamp, interval_id, timestamp],
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    Ok(())
+}
+
+fn work_interval_get_intervals(
+    taskdb_dir: String,
+    task_uuid: String,
+) -> Result<Vec<ffi::WorkInterval>, CppError> {
+    let db_path = get_db_path(taskdb_dir);
+    let conn = Connection::open(&db_path).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    let mut intervals = Vec::new();
+    
+    // Query for completed intervals (start + stop/done pairs)
+    let mut stmt = conn.prepare(
+        "SELECT start.timestamp, end.timestamp, end.event_type, start.interval_id
+         FROM work_intervals start
+         JOIN work_intervals end ON start.interval_id = end.interval_id 
+             AND start.task_uuid = end.task_uuid
+         WHERE start.task_uuid = ? 
+           AND start.event_type = 'start'
+           AND end.event_type IN ('stop', 'done')
+         ORDER BY start.timestamp ASC"
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    let rows = stmt.query_map([&task_uuid], |row| {
+        Ok(ffi::WorkInterval {
+            task_uuid: task_uuid.clone(),
+            start_time: row.get(0)?,
+            end_time: row.get(1)?,
+            event_type: row.get(2)?,
+            interval_id: row.get(3)?,
+            is_open: false,
+        })
+    }).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    for row in rows {
+        intervals.push(row.map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?);
+    }
+    
+    // Query for open intervals (start events without stop/done)
+    let mut open_stmt = conn.prepare(
+        "SELECT start.timestamp, start.interval_id
+         FROM work_intervals start
+         LEFT JOIN work_intervals end ON start.interval_id = end.interval_id 
+             AND start.task_uuid = end.task_uuid 
+             AND end.event_type IN ('stop', 'done')
+         WHERE start.task_uuid = ? 
+           AND start.event_type = 'start'
+           AND end.id IS NULL
+         ORDER BY start.timestamp ASC"
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    
+    let open_rows = open_stmt.query_map([&task_uuid], |row| {
+        Ok(ffi::WorkInterval {
+            task_uuid: task_uuid.clone(),
+            start_time: row.get(0)?,
+            end_time: now,
+            event_type: String::new(),
+            interval_id: row.get(1)?,
+            is_open: true,
+        })
+    }).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    for row in open_rows {
+        intervals.push(row.map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?);
+    }
+    
+    Ok(intervals)
+}
+
+fn work_interval_get_intervals_by_date(
+    taskdb_dir: String,
+    start_time: i64,
+    end_time: i64,
+) -> Result<Vec<ffi::WorkInterval>, CppError> {
+    let db_path = get_db_path(taskdb_dir);
+    let conn = Connection::open(&db_path).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    let mut intervals = Vec::new();
+    
+    // Query for completed intervals within date range
+    let mut stmt = conn.prepare(
+        "SELECT start.task_uuid, start.timestamp, end.timestamp, end.event_type, start.interval_id
+         FROM work_intervals start
+         JOIN work_intervals end ON start.interval_id = end.interval_id 
+             AND start.task_uuid = end.task_uuid
+         WHERE start.timestamp >= ?1 AND start.timestamp <= ?2
+           AND start.event_type = 'start'
+           AND end.event_type IN ('stop', 'done')
+         ORDER BY start.timestamp ASC"
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    let rows = stmt.query_map(rusqlite::params![start_time, end_time], |row| {
+        Ok(ffi::WorkInterval {
+            task_uuid: row.get(0)?,
+            start_time: row.get(1)?,
+            end_time: row.get(2)?,
+            event_type: row.get(3)?,
+            interval_id: row.get(4)?,
+            is_open: false,
+        })
+    }).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    for row in rows {
+        intervals.push(row.map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?);
+    }
+    
+    // Query for open intervals within date range
+    let mut open_stmt = conn.prepare(
+        "SELECT start.task_uuid, start.timestamp, start.interval_id
+         FROM work_intervals start
+         LEFT JOIN work_intervals end ON start.interval_id = end.interval_id 
+             AND start.task_uuid = end.task_uuid 
+             AND end.event_type IN ('stop', 'done')
+         WHERE start.timestamp >= ?1 AND start.timestamp <= ?2
+           AND start.event_type = 'start'
+           AND end.id IS NULL
+         ORDER BY start.timestamp ASC"
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    
+    let open_rows = open_stmt.query_map(rusqlite::params![start_time, end_time], |row| {
+        Ok(ffi::WorkInterval {
+            task_uuid: row.get(0)?,
+            start_time: row.get(1)?,
+            end_time: now,
+            event_type: String::new(),
+            interval_id: row.get(2)?,
+            is_open: true,
+        })
+    }).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    for row in open_rows {
+        intervals.push(row.map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?);
+    }
+    
+    Ok(intervals)
 }
 
 #[cfg(test)]

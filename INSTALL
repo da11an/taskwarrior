@@ -16,7 +16,6 @@ You will need a C++ compiler that supports full C++17, which includes:
 
 You will need the following libraries:
   - libuuid (not needed for OSX)
-  - libsqlite3-dev (Ubuntu/Debian) or sqlite-devel (Fedora/RHEL) - required for work intervals feature
 
 You will need a Rust toolchain of the Minimum Supported Rust Version (MSRV):
   - rust 1.81.0
