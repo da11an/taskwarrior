@@ -100,7 +100,7 @@ endif (HAVE_UUID_UNPARSE_LOWER)
 
 # Find SQLite3 (required for work intervals feature)
 message ("-- Looking for SQLite3")
-find_package (SQLite3)
+find_package (SQLite3 QUIET)
 if (SQLite3_FOUND)
   message ("-- Found SQLite3: ${SQLite3_VERSION}")
   include_directories (${SQLite3_INCLUDE_DIRS})
@@ -111,18 +111,40 @@ else (SQLite3_FOUND)
     /usr/include
     /usr/local/include
     /opt/local/include
+    /opt/homebrew/include
+    ENV INCLUDE
+    PATH_SUFFIXES sqlite
   )
-  find_library (SQLite3_LIBRARY sqlite3
+  find_library (SQLite3_LIBRARY
+    NAMES sqlite3
     PATHS
     /usr/lib
+    /usr/lib64
     /usr/local/lib
+    /usr/local/lib64
     /opt/local/lib
+    /opt/homebrew/lib
+    ENV LIB
   )
   if (SQLite3_INCLUDE_DIR AND SQLite3_LIBRARY)
     message ("-- Found SQLite3 (manual search)")
+    message ("--   Include dir: ${SQLite3_INCLUDE_DIR}")
+    message ("--   Library: ${SQLite3_LIBRARY}")
     include_directories (${SQLite3_INCLUDE_DIR})
   else (SQLite3_INCLUDE_DIR AND SQLite3_LIBRARY)
-    message (FATAL_ERROR "-- SQLite3 not found. Please install libsqlite3-dev (Debian/Ubuntu) or sqlite-devel (Fedora/RHEL)")
+    if (NOT SQLite3_INCLUDE_DIR)
+      message (STATUS "--   sqlite3.h not found in standard locations")
+    endif (NOT SQLite3_INCLUDE_DIR)
+    if (NOT SQLite3_LIBRARY)
+      message (STATUS "--   libsqlite3 not found in standard locations")
+    endif (NOT SQLite3_LIBRARY)
+    message (FATAL_ERROR "-- SQLite3 development files not found.\n"
+                         "   Note: The 'sqlite3' command-line tool is separate from development headers.\n"
+                         "   Please install:\n"
+                         "     - Ubuntu/Debian: sudo apt-get install libsqlite3-dev\n"
+                         "     - Fedora/RHEL:   sudo dnf install sqlite-devel\n"
+                         "     - Arch Linux:    sudo pacman -S sqlite\n"
+                         "     - macOS:         brew install sqlite")
   endif (SQLite3_INCLUDE_DIR AND SQLite3_LIBRARY)
 endif (SQLite3_FOUND)
 
