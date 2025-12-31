@@ -701,7 +701,7 @@ int Context::initialize(int argc, const char** argv) {
 
     // Initialize work intervals tracking (lazy initialization on first use)
     // Don't initialize here to avoid potential issues during startup
-    // WorkInterval::initialize() will be called on first log_event()
+    // WorkInterval table will be created lazily on first use (via ensure_table_exists())
   }
 
   catch (const std::string& message) {

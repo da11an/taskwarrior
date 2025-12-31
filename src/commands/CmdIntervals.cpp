@@ -105,6 +105,9 @@ int CmdIntervals::execute(std::string& output) {
 
     // Get annotations for this task to match with interval timestamps
     auto annotations = task.getAnnotations();
+    
+    // Get current time once for all intervals (used for open interval annotation filtering)
+    time_t current_time = time(nullptr);
 
     for (const auto& interval : intervals) {
       int row = view.addRow();
@@ -140,7 +143,6 @@ int CmdIntervals::execute(std::string& output) {
       // Tolerance for "at start" and "at end" (within 5 seconds to account for annotation timestamp increments)
       const time_t tolerance = 5;
       time_t interval_duration = interval.end_time - interval.start_time;
-      time_t current_time = time(nullptr);
       
       for (const auto& anno : annotations) {
         // Extract timestamp from annotation key (annotation_<timestamp>)
