@@ -41,10 +41,15 @@ struct Interval {
   time_t end_time;
   std::string event_type;  // "stop" or "done"
   int interval_id;
+  bool is_open;  // true if interval is still open (no stop/done event yet)
   // Note: Messages are stored as annotations with the interval timestamp, not here
   
   // Calculate duration in seconds
+  // For open intervals, calculates from start to current time
   time_t duration() const {
+    if (is_open) {
+      return time(nullptr) - start_time;
+    }
     return end_time - start_time;
   }
 };

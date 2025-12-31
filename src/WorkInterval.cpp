@@ -394,9 +394,39 @@ std::vector<Interval> WorkInterval::get_intervals(const std::string& task_uuid) 
       const unsigned char* event_type = sqlite3_column_text(stmt, 2);
       interval.event_type = event_type ? reinterpret_cast<const char*>(event_type) : "";
       interval.interval_id = sqlite3_column_int(stmt, 3);
+      interval.is_open = false;
       intervals.push_back(interval);
     }
     sqlite3_finalize(stmt);
+  }
+
+  // Query for open intervals (start events without stop/done)
+  const char* open_sql =
+      "SELECT start.timestamp, start.interval_id "
+      "FROM work_intervals start "
+      "LEFT JOIN work_intervals end ON start.interval_id = end.interval_id AND start.task_uuid = end.task_uuid "
+      "  AND end.event_type IN ('stop', 'done') "
+      "WHERE start.task_uuid = ? "
+      "  AND start.event_type = 'start' "
+      "  AND end.id IS NULL "
+      "ORDER BY start.timestamp ASC;";
+
+  sqlite3_stmt* open_stmt = nullptr;
+  rc = sqlite3_prepare_v2(db, open_sql, -1, &open_stmt, nullptr);
+
+  if (rc == SQLITE_OK) {
+    sqlite3_bind_text(open_stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
+    while ((rc = sqlite3_step(open_stmt)) == SQLITE_ROW) {
+      Interval interval;
+      interval.task_uuid = task_uuid;
+      interval.start_time = static_cast<time_t>(sqlite3_column_int64(open_stmt, 0));
+      interval.end_time = time(nullptr);  // Use current time for open intervals
+      interval.event_type = "";  // No event type for open intervals
+      interval.interval_id = sqlite3_column_int(open_stmt, 1);
+      interval.is_open = true;
+      intervals.push_back(interval);
+    }
+    sqlite3_finalize(open_stmt);
   }
 
   sqlite3_close(db);
@@ -445,9 +475,41 @@ std::vector<Interval> WorkInterval::get_intervals_by_date(time_t start_time,
       const unsigned char* event_type = sqlite3_column_text(stmt, 3);
       interval.event_type = event_type ? reinterpret_cast<const char*>(event_type) : "";
       interval.interval_id = sqlite3_column_int(stmt, 4);
+      interval.is_open = false;
       intervals.push_back(interval);
     }
     sqlite3_finalize(stmt);
+  }
+
+  // Query for open intervals within date range
+  const char* open_sql =
+      "SELECT start.task_uuid, start.timestamp, start.interval_id "
+      "FROM work_intervals start "
+      "LEFT JOIN work_intervals end ON start.interval_id = end.interval_id AND start.task_uuid = end.task_uuid "
+      "  AND end.event_type IN ('stop', 'done') "
+      "WHERE start.timestamp >= ? AND start.timestamp <= ? "
+      "  AND start.event_type = 'start' "
+      "  AND end.id IS NULL "
+      "ORDER BY start.timestamp ASC;";
+
+  sqlite3_stmt* open_stmt = nullptr;
+  rc = sqlite3_prepare_v2(db, open_sql, -1, &open_stmt, nullptr);
+
+  if (rc == SQLITE_OK) {
+    sqlite3_bind_int64(open_stmt, 1, static_cast<sqlite3_int64>(start_time));
+    sqlite3_bind_int64(open_stmt, 2, static_cast<sqlite3_int64>(end_time));
+    while ((rc = sqlite3_step(open_stmt)) == SQLITE_ROW) {
+      Interval interval;
+      const unsigned char* uuid = sqlite3_column_text(open_stmt, 0);
+      interval.task_uuid = uuid ? reinterpret_cast<const char*>(uuid) : "";
+      interval.start_time = static_cast<time_t>(sqlite3_column_int64(open_stmt, 1));
+      interval.end_time = time(nullptr);  // Use current time for open intervals
+      interval.event_type = "";  // No event type for open intervals
+      interval.interval_id = sqlite3_column_int(open_stmt, 2);
+      interval.is_open = true;
+      intervals.push_back(interval);
+    }
+    sqlite3_finalize(open_stmt);
   }
 
   sqlite3_close(db);

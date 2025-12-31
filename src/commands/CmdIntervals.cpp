@@ -117,8 +117,13 @@ int CmdIntervals::execute(std::string& output) {
       view.set(row, 1, start_dt.toString(dateformat));
       
       // Format end time (column 2)
-      Datetime end_dt(interval.end_time);
-      view.set(row, 2, end_dt.toString(dateformat));
+      // For open intervals, show "ongoing" or current time
+      if (interval.is_open) {
+        view.set(row, 2, "ongoing");
+      } else {
+        Datetime end_dt(interval.end_time);
+        view.set(row, 2, end_dt.toString(dateformat));
+      }
       
       // Calculate and format duration (column 3)
       time_t duration_sec = interval.duration();
@@ -135,15 +140,19 @@ int CmdIntervals::execute(std::string& output) {
       // Tolerance for "at start" and "at end" (within 5 seconds to account for annotation timestamp increments)
       const time_t tolerance = 5;
       time_t interval_duration = interval.end_time - interval.start_time;
+      time_t current_time = time(nullptr);
       
       for (const auto& anno : annotations) {
         // Extract timestamp from annotation key (annotation_<timestamp>)
         if (anno.first.substr(0, 11) == "annotation_") {
           time_t anno_time = strtoll(anno.first.substr(11).c_str(), nullptr, 10);
           
+          // For open intervals, only include annotations up to current time
+          time_t effective_end_time = interval.is_open ? current_time : interval.end_time;
+          
           // Check if annotation is within the interval (with some tolerance for edge cases)
           // Include annotations slightly before start (journal annotations) and slightly after end
-          if (anno_time >= interval.start_time - tolerance && anno_time <= interval.end_time + tolerance) {
+          if (anno_time >= interval.start_time - tolerance && anno_time <= effective_end_time + tolerance) {
             // For very short intervals (< 10 seconds), use simpler logic
             if (interval_duration < 10) {
               // If very close to end (within tolerance), it's an end note
@@ -161,7 +170,8 @@ int CmdIntervals::execute(std::string& output) {
             } else {
               // For longer intervals, use more precise categorization
               time_t distance_from_start = anno_time - interval.start_time;
-              time_t distance_from_end = interval.end_time - anno_time;
+              time_t effective_end_time = interval.is_open ? current_time : interval.end_time;
+              time_t distance_from_end = effective_end_time - anno_time;
               
               // Prioritize end notes if annotation is closer to end than start
               if (distance_from_end <= tolerance && distance_from_end <= distance_from_start) {
@@ -172,7 +182,7 @@ int CmdIntervals::execute(std::string& output) {
                 start_notes.push_back(anno.second);
               }
               // During: everything else in between
-              else if (anno_time > interval.start_time + tolerance && anno_time < interval.end_time - tolerance) {
+              else if (anno_time > interval.start_time + tolerance && anno_time < effective_end_time - tolerance) {
                 during_notes.push_back(anno.second);
               }
             }
