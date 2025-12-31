@@ -30,6 +30,7 @@
 #include <CmdStart.h>
 #include <Context.h>
 #include <Filter.h>
+#include <WorkInterval.h>
 #include <dependency.h>
 #include <feedback.h>
 #include <format.h>
@@ -38,6 +39,7 @@
 #include <util.h>
 
 #include <iostream>
+#include <ctime>
 
 ////////////////////////////////////////////////////////////////////////////////
 CmdStart::CmdStart() {
@@ -99,6 +101,16 @@ int CmdStart::execute(std::string&) {
       if (permission(before.diff(task) + question, filtered.size())) {
         updateRecurrenceMask(task);
         Context::getContext().tdb2.modify(task);
+        
+        // Log work interval start event
+        try {
+          time_t start_time = task.get_date("start");
+          WorkInterval::log_event(task.get("uuid"), "start", start_time);
+        } catch (const std::string& e) {
+          // Log error but don't fail the command
+          Context::getContext().debug(format("Failed to log work interval: {1}", e));
+        }
+        
         ++count;
         feedback_affected("Starting task {1} '{2}'.", task);
         dependencyChainOnStart(task);

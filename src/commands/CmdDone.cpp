@@ -30,6 +30,7 @@
 #include <CmdDone.h>
 #include <Context.h>
 #include <Filter.h>
+#include <WorkInterval.h>
 #include <dependency.h>
 #include <feedback.h>
 #include <format.h>
@@ -38,6 +39,7 @@
 #include <util.h>
 
 #include <iostream>
+#include <ctime>
 
 ////////////////////////////////////////////////////////////////////////////////
 CmdDone::CmdDone() {
@@ -51,7 +53,7 @@ CmdDone::CmdDone() {
   _uses_context = true;
   _accepts_filter = true;
   _accepts_modifications = true;
-  _accepts_miscellaneous = false;
+  _accepts_miscellaneous = true;  // Allow --message/-m flag
   _category = Command::Category::operation;
 }
 
@@ -72,6 +74,9 @@ int CmdDone::execute(std::string&) {
   // Accumulated project change notifications.
   std::map<std::string, std::string> projectChanges;
 
+  // Extract message from CLI2
+  std::string message = Context::getContext().cli2.getMessage();
+
   if (filtered.size() > 1) {
     feedback_affected("This command will alter {1} tasks.", filtered.size());
   }
@@ -85,6 +90,13 @@ int CmdDone::execute(std::string&) {
       std::string question =
           format("Complete task {1} '{2}'?", task.identifier(true), task.get("description"));
 
+      // Get start time before removing it (if exists)
+      time_t start_time = 0;
+      time_t done_time = time(nullptr);
+      if (task.has("start")) {
+        start_time = task.get_date("start");
+      }
+
       task.modify(Task::modAnnotate);
       task.setStatus(Task::completed);
       if (!task.has("end")) task.setAsNow("end");
@@ -96,9 +108,25 @@ int CmdDone::execute(std::string&) {
           task.addAnnotation(Context::getContext().config.get("journal.time.stop.annotation"));
       }
 
+      // Add work interval message as annotation with interval timestamp
+      if (!message.empty() && start_time > 0) {
+        task.addAnnotation(message, done_time);
+      }
+
       if (permission(before.diff(task) + question, filtered.size())) {
         updateRecurrenceMask(task);
         Context::getContext().tdb2.modify(task);
+        
+        // Log work interval done event (without message - it's in annotation now)
+        if (start_time > 0) {
+          try {
+            WorkInterval::log_event(task.get("uuid"), "done", done_time);
+          } catch (const std::string& e) {
+            // Log error but don't fail the command
+            Context::getContext().debug(format("Failed to log work interval: {1}", e));
+          }
+        }
+        
         ++count;
         feedback_affected("Completed task {1} '{2}'.", task);
         feedback_unblocked(task);

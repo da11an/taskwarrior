@@ -40,8 +40,8 @@ struct Interval {
   time_t start_time;
   time_t end_time;
   std::string event_type;  // "stop" or "done"
-  std::string message;     // Optional message from stop/done
   int interval_id;
+  // Note: Messages are stored as annotations with the interval timestamp, not here
   
   // Calculate duration in seconds
   time_t duration() const {
@@ -57,12 +57,10 @@ class WorkInterval {
   static void initialize(const std::string& db_path);
 
   // Log a work interval event (start, stop, or done)
-  // For 'start' events, message should be empty
-  // For 'stop' and 'done' events, message is optional
+  // Messages are stored as annotations with the interval timestamp, not in work_intervals
   static void log_event(const std::string& task_uuid,
                        const std::string& event_type,  // "start", "stop", or "done"
-                       time_t timestamp,
-                       const std::string& message = "");
+                       time_t timestamp);
 
   // Get all intervals for a specific task (by UUID)
   static std::vector<Interval> get_intervals(const std::string& task_uuid);

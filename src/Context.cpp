@@ -34,6 +34,7 @@
 #include <FS.h>
 #include <Variant.h>
 #include <Version.h>
+#include <WorkInterval.h>
 #include <assert.h>
 #include <format.h>
 #include <recur.h>
@@ -691,6 +692,16 @@ int Context::initialize(int argc, const char** argv) {
     ////////////////////////////////////////////////////////////////////////////
 
     hooks.initialize();
+
+    ////////////////////////////////////////////////////////////////////////////
+    //
+    // [8.5] Initialize work intervals tracking.
+    //
+    ////////////////////////////////////////////////////////////////////////////
+
+    // Initialize work intervals tracking (lazy initialization on first use)
+    // Don't initialize here to avoid potential issues during startup
+    // WorkInterval::initialize() will be called on first log_event()
   }
 
   catch (const std::string& message) {
@@ -802,6 +813,11 @@ int Context::run() {
   catch (int) {
     // Hooks can terminate processing by throwing integers.
     rc = 4;
+  }
+
+  catch (const std::exception& e) {
+    error(format("Exception: {1}", e.what()));
+    rc = 3;
   }
 
   catch (...) {

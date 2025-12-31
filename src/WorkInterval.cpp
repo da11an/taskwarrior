@@ -36,7 +36,6 @@
 #include <sqlite3.h>
 #include <cstring>
 #include <sstream>
-#include <stdexcept>
 
 // Static member initialization
 bool WorkInterval::_initialized = false;
@@ -101,7 +100,7 @@ void WorkInterval::create_table() {
   if (rc != SQLITE_OK) {
     std::string error = format("Cannot open database: {1}", sqlite3_errmsg(db));
     if (db) sqlite3_close(db);
-    throw std::runtime_error(error);
+    throw error;
   }
 
   const char* sql =
@@ -110,7 +109,6 @@ void WorkInterval::create_table() {
       "    task_uuid TEXT NOT NULL,"
       "    event_type TEXT NOT NULL,"
       "    timestamp INTEGER NOT NULL,"
-      "    message TEXT,"
       "    interval_id INTEGER,"
       "    created_at INTEGER NOT NULL"
       ");"
@@ -125,7 +123,7 @@ void WorkInterval::create_table() {
     std::string error = format("Cannot create work_intervals table: {1}", errmsg ? errmsg : "unknown error");
     sqlite3_free(errmsg);
     sqlite3_close(db);
-    throw std::runtime_error(error);
+    throw error;
   }
 
   sqlite3_close(db);
@@ -150,7 +148,7 @@ int WorkInterval::get_next_interval_id(const std::string& task_uuid) {
   if (rc != SQLITE_OK) {
     std::string error = format("Cannot open database: {1}", sqlite3_errmsg(db));
     if (db) sqlite3_close(db);
-    throw std::runtime_error(error);
+    throw error;
   }
 
   // Get the maximum interval_id for this task, or 0 if none exists
@@ -205,8 +203,7 @@ int WorkInterval::get_next_interval_id(const std::string& task_uuid) {
 ////////////////////////////////////////////////////////////////////////////////
 void WorkInterval::log_event(const std::string& task_uuid,
                              const std::string& event_type,
-                             time_t timestamp,
-                             const std::string& message) {
+                             time_t timestamp) {
   ensure_table_exists();
 
   sqlite3* db = nullptr;
@@ -217,44 +214,121 @@ void WorkInterval::log_event(const std::string& task_uuid,
   if (rc != SQLITE_OK) {
     std::string error = format("Cannot open database: {1}", sqlite3_errmsg(db));
     if (db) sqlite3_close(db);
-    throw std::runtime_error(error);
+    throw error;
   }
 
   // Determine interval_id
   int interval_id = 0;
   if (event_type == "start") {
-    interval_id = get_next_interval_id(task_uuid);
+    // Get the maximum interval_id for this task, or 0 if none exists
+    const char* max_sql = "SELECT MAX(interval_id) FROM work_intervals WHERE task_uuid = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    rc = sqlite3_prepare_v2(db, max_sql, -1, &stmt, nullptr);
+    if (rc == SQLITE_OK) {
+      sqlite3_bind_text(stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
+      rc = sqlite3_step(stmt);
+      if (rc == SQLITE_ROW) {
+        int max_id = sqlite3_column_int(stmt, 0);
+        // Check if there's an open interval (start without stop/done)
+        if (max_id > 0) {
+          const char* check_sql =
+              "SELECT COUNT(*) FROM work_intervals "
+              "WHERE task_uuid = ? AND interval_id = ? AND event_type = 'start' "
+              "AND interval_id NOT IN ("
+              "  SELECT interval_id FROM work_intervals "
+              "  WHERE task_uuid = ? AND interval_id = ? AND event_type IN ('stop', 'done')"
+              ");";
+          sqlite3_stmt* check_stmt = nullptr;
+          int check_rc = sqlite3_prepare_v2(db, check_sql, -1, &check_stmt, nullptr);
+          if (check_rc == SQLITE_OK) {
+            sqlite3_bind_text(check_stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
+            sqlite3_bind_int(check_stmt, 2, max_id);
+            sqlite3_bind_text(check_stmt, 3, task_uuid.c_str(), -1, SQLITE_STATIC);
+            sqlite3_bind_int(check_stmt, 4, max_id);
+            check_rc = sqlite3_step(check_stmt);
+            if (check_rc == SQLITE_ROW) {
+              int open_count = sqlite3_column_int(check_stmt, 0);
+              if (open_count == 0) {
+                // Last interval is closed, use next ID
+                interval_id = max_id + 1;
+              } else {
+                // Last interval is still open, reuse the ID
+                interval_id = max_id;
+              }
+            }
+            sqlite3_finalize(check_stmt);
+          }
+        } else {
+          interval_id = 1;
+        }
+      } else {
+        interval_id = 1;
+      }
+      sqlite3_finalize(stmt);
+    } else {
+      interval_id = 1;  // Default to 1 if query fails
+    }
   } else if (event_type == "stop" || event_type == "done") {
     // Find the most recent open interval (start without stop/done)
+    // Simple approach: get the latest start event's interval_id
     const char* find_sql =
         "SELECT interval_id FROM work_intervals "
         "WHERE task_uuid = ? AND event_type = 'start' "
-        "AND interval_id NOT IN ("
-        "  SELECT interval_id FROM work_intervals "
-        "  WHERE task_uuid = ? AND event_type IN ('stop', 'done')"
-        ") "
         "ORDER BY timestamp DESC LIMIT 1;";
     sqlite3_stmt* stmt = nullptr;
     rc = sqlite3_prepare_v2(db, find_sql, -1, &stmt, nullptr);
     if (rc == SQLITE_OK) {
       sqlite3_bind_text(stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
-      sqlite3_bind_text(stmt, 2, task_uuid.c_str(), -1, SQLITE_STATIC);
       rc = sqlite3_step(stmt);
       if (rc == SQLITE_ROW) {
         interval_id = sqlite3_column_int(stmt, 0);
+        // Check if this interval already has a stop/done
+        const char* check_sql =
+            "SELECT COUNT(*) FROM work_intervals "
+            "WHERE task_uuid = ? AND interval_id = ? AND event_type IN ('stop', 'done');";
+        sqlite3_stmt* check_stmt = nullptr;
+        int check_rc = sqlite3_prepare_v2(db, check_sql, -1, &check_stmt, nullptr);
+        if (check_rc == SQLITE_OK) {
+          sqlite3_bind_text(check_stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
+          sqlite3_bind_int(check_stmt, 2, interval_id);
+          check_rc = sqlite3_step(check_stmt);
+          if (check_rc == SQLITE_ROW) {
+            int count = sqlite3_column_int(check_stmt, 0);
+            if (count > 0) {
+              // This interval is already closed, get next ID
+              interval_id = 0;
+            }
+          }
+          sqlite3_finalize(check_stmt);
+        }
       }
       sqlite3_finalize(stmt);
     }
-    // If no open interval found, create a new one (shouldn't happen in normal flow)
+    // If no open interval found, use the latest interval_id + 1
     if (interval_id == 0) {
-      interval_id = get_next_interval_id(task_uuid);
+      const char* max_sql = "SELECT MAX(interval_id) FROM work_intervals WHERE task_uuid = ?;";
+      sqlite3_stmt* max_stmt = nullptr;
+      rc = sqlite3_prepare_v2(db, max_sql, -1, &max_stmt, nullptr);
+      if (rc == SQLITE_OK) {
+        sqlite3_bind_text(max_stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
+        rc = sqlite3_step(max_stmt);
+        if (rc == SQLITE_ROW) {
+          int max_id = sqlite3_column_int(max_stmt, 0);
+          interval_id = max_id > 0 ? max_id + 1 : 1;
+        } else {
+          interval_id = 1;
+        }
+        sqlite3_finalize(max_stmt);
+      } else {
+        interval_id = 1;
+      }
     }
   }
 
   // Insert the event
   const char* insert_sql =
-      "INSERT INTO work_intervals (task_uuid, event_type, timestamp, message, interval_id, created_at) "
-      "VALUES (?, ?, ?, ?, ?, ?);";
+      "INSERT INTO work_intervals (task_uuid, event_type, timestamp, interval_id, created_at) "
+      "VALUES (?, ?, ?, ?, ?);";
   sqlite3_stmt* stmt = nullptr;
   rc = sqlite3_prepare_v2(db, insert_sql, -1, &stmt, nullptr);
 
@@ -262,26 +336,21 @@ void WorkInterval::log_event(const std::string& task_uuid,
     sqlite3_bind_text(stmt, 1, task_uuid.c_str(), -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 2, event_type.c_str(), -1, SQLITE_STATIC);
     sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(timestamp));
-    if (message.empty()) {
-      sqlite3_bind_null(stmt, 4);
-    } else {
-      sqlite3_bind_text(stmt, 4, message.c_str(), -1, SQLITE_STATIC);
-    }
-    sqlite3_bind_int(stmt, 5, interval_id);
-    sqlite3_bind_int64(stmt, 6, static_cast<sqlite3_int64>(time(nullptr)));
+    sqlite3_bind_int(stmt, 4, interval_id);
+    sqlite3_bind_int64(stmt, 5, static_cast<sqlite3_int64>(time(nullptr)));
 
     rc = sqlite3_step(stmt);
     if (rc != SQLITE_DONE) {
       std::string error = format("Cannot insert work interval: {1}", sqlite3_errmsg(db));
       sqlite3_finalize(stmt);
       sqlite3_close(db);
-      throw std::runtime_error(error);
+      throw error;
     }
     sqlite3_finalize(stmt);
   } else {
     std::string error = format("Cannot prepare insert statement: {1}", sqlite3_errmsg(db));
     sqlite3_close(db);
-    throw std::runtime_error(error);
+    throw error;
   }
 
   sqlite3_close(db);
@@ -304,7 +373,7 @@ std::vector<Interval> WorkInterval::get_intervals(const std::string& task_uuid) 
 
   // Query for completed intervals (start + stop/done pairs)
   const char* sql =
-      "SELECT start.timestamp, end.timestamp, end.event_type, end.message, start.interval_id "
+      "SELECT start.timestamp, end.timestamp, end.event_type, start.interval_id "
       "FROM work_intervals start "
       "JOIN work_intervals end ON start.interval_id = end.interval_id AND start.task_uuid = end.task_uuid "
       "WHERE start.task_uuid = ? "
@@ -324,9 +393,7 @@ std::vector<Interval> WorkInterval::get_intervals(const std::string& task_uuid) 
       interval.end_time = static_cast<time_t>(sqlite3_column_int64(stmt, 1));
       const unsigned char* event_type = sqlite3_column_text(stmt, 2);
       interval.event_type = event_type ? reinterpret_cast<const char*>(event_type) : "";
-      const unsigned char* message = sqlite3_column_text(stmt, 3);
-      interval.message = message ? reinterpret_cast<const char*>(message) : "";
-      interval.interval_id = sqlite3_column_int(stmt, 4);
+      interval.interval_id = sqlite3_column_int(stmt, 3);
       intervals.push_back(interval);
     }
     sqlite3_finalize(stmt);
@@ -353,8 +420,9 @@ std::vector<Interval> WorkInterval::get_intervals_by_date(time_t start_time,
   }
 
   // Query for completed intervals within date range
+  // Note: Messages are stored as annotations, not in work_intervals
   const char* sql =
-      "SELECT start.task_uuid, start.timestamp, end.timestamp, end.event_type, end.message, start.interval_id "
+      "SELECT start.task_uuid, start.timestamp, end.timestamp, end.event_type, start.interval_id "
       "FROM work_intervals start "
       "JOIN work_intervals end ON start.interval_id = end.interval_id AND start.task_uuid = end.task_uuid "
       "WHERE start.timestamp >= ? AND start.timestamp <= ? "
@@ -376,9 +444,7 @@ std::vector<Interval> WorkInterval::get_intervals_by_date(time_t start_time,
       interval.end_time = static_cast<time_t>(sqlite3_column_int64(stmt, 2));
       const unsigned char* event_type = sqlite3_column_text(stmt, 3);
       interval.event_type = event_type ? reinterpret_cast<const char*>(event_type) : "";
-      const unsigned char* message = sqlite3_column_text(stmt, 4);
-      interval.message = message ? reinterpret_cast<const char*>(message) : "";
-      interval.interval_id = sqlite3_column_int(stmt, 5);
+      interval.interval_id = sqlite3_column_int(stmt, 4);
       intervals.push_back(interval);
     }
     sqlite3_finalize(stmt);

@@ -921,7 +921,14 @@ bool Task::hasAnnotations() const { return annotation_count ? true : false; }
 // timestamp.
 void Task::addAnnotation(const std::string& description) {
   time_t now = time(nullptr);
+  addAnnotation(description, now);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Add annotation with a specific timestamp (used for work interval messages)
+void Task::addAnnotation(const std::string& description, time_t timestamp) {
   std::string key;
+  time_t now = timestamp;
 
   do {
     key = "annotation_" + format((long long int)now);
@@ -1961,7 +1968,9 @@ void Task::modify(modType type, bool text_required /* = false */) {
 
   std::string text = "";
   bool mods = false;
-  for (auto& a : Context::getContext().cli2._args) {
+  auto& args = Context::getContext().cli2._args;
+  for (size_t i = 0; i < args.size(); ++i) {
+    auto& a = args[i];
     if (a.hasTag("MODIFICATION")) {
       if (a._lextype == Lexer::Type::pair) {
         // 'canonical' is the canonical name. Needs to be said.
@@ -2036,9 +2045,22 @@ void Task::modify(modType type, bool text_required /* = false */) {
       }
 
       // Unknown args are accumulated as though they were WORDs.
+      // BUT: Skip message values that are part of --message flag
       else {
-        if (text != "") text += ' ';
-        text += a.attribute("raw");
+        // Check if this is a message value (following --message or -m flag)
+        bool is_message_value = false;
+        if (i > 0) {
+          std::string prev_raw = args[i-1].attribute("raw");
+          if (prev_raw == "--message" || prev_raw == "-m") {
+            is_message_value = true;
+          }
+        }
+        
+        // Only accumulate if it's not a message value
+        if (!is_message_value) {
+          if (text != "") text += ' ';
+          text += a.attribute("raw");
+        }
       }
     }
   }

@@ -633,6 +633,42 @@ const std::vector<A2> CLI2::getMiscellaneous() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Extract message from --message or -m flag
+std::string CLI2::getMessage() const {
+  std::string message;
+  
+  // Look through all _args for --message or -m flag
+  for (size_t i = 0; i < _args.size(); ++i) {
+    const auto& arg = _args[i];
+    std::string raw = arg.attribute("raw");
+    
+    // Check for --message=value or -m=value (with equals)
+    if (raw.size() > 9 && raw.substr(0, 9) == "--message=") {
+      message = raw.substr(9);
+      break;
+    }
+    else if (raw.size() > 2 && raw.substr(0, 2) == "-m=") {
+      message = raw.substr(2);
+      break;
+    }
+    // Check for --message or -m (separate value)
+    else if (raw == "--message" || raw == "-m") {
+      // Look for next argument as value (skip if it's another flag)
+      if (i + 1 < _args.size()) {
+        std::string next_raw = _args[i + 1].attribute("raw");
+        // Only use next arg if it doesn't start with - (not a flag)
+        if (next_raw.empty() || (next_raw[0] != '-' && next_raw != "--")) {
+          message = next_raw;
+          break;
+        }
+      }
+    }
+  }
+  
+  return message;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Search for 'value' in _entities category, return canonicalized value.
 bool CLI2::canonicalize(std::string& canonicalized, const std::string& category,
                         const std::string& value) {
@@ -848,7 +884,8 @@ void CLI2::categorizeArgs() {
 
   bool changes = false;
   bool afterCommand = false;
-  for (auto& a : _args) {
+  for (size_t i = 0; i < _args.size(); ++i) {
+    auto& a = _args[i];
     if (a._lextype == Lexer::Type::separator) continue;
 
     // Record that the command has been found, it affects behavior.
@@ -910,8 +947,38 @@ void CLI2::categorizeArgs() {
       changes = true;
     } else if (cmd && cmd->accepts_filter() && cmd->accepts_modifications() &&
                cmd->accepts_miscellaneous()) {
-      // Error: internally inconsistent.
-      throw std::string("Unknown error. Please report.");
+      // All three are allowed: prioritize FILTER before command, MODIFICATION after
+      // Special flags like --message go to MISCELLANEOUS
+      if (!afterCommand) {
+        a.tag("FILTER");
+      } else {
+        // After command: check if it's a modification (has = or :) or a flag (starts with -)
+        std::string raw = a.attribute("raw");
+        
+        // Check if this is the value following --message or -m flag
+        bool is_message_value = false;
+        if (i > 0) {
+          std::string prev_raw = _args[i-1].attribute("raw");
+          if (prev_raw == "--message" || prev_raw == "-m") {
+            is_message_value = true;
+          }
+        }
+        
+        if (is_message_value) {
+          // Message values should be MISCELLANEOUS, not MODIFICATION
+          a.tag("MISCELLANEOUS");
+        } else if (raw.find('=') != std::string::npos || raw.find(':') != std::string::npos ||
+            a._lextype == Lexer::Type::pair) {
+          a.tag("MODIFICATION");
+        } else if (raw.size() > 0 && raw[0] == '-') {
+          // Flags like --message go to MISCELLANEOUS
+          a.tag("MISCELLANEOUS");
+        } else {
+          // Default to MODIFICATION for other arguments
+          a.tag("MODIFICATION");
+        }
+      }
+      changes = true;
     }
   }
 

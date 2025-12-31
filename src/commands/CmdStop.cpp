@@ -30,12 +30,14 @@
 #include <CmdStop.h>
 #include <Context.h>
 #include <Filter.h>
+#include <WorkInterval.h>
 #include <dependency.h>
 #include <feedback.h>
 #include <format.h>
 #include <recur.h>
 
 #include <iostream>
+#include <ctime>
 
 ////////////////////////////////////////////////////////////////////////////////
 CmdStop::CmdStop() {
@@ -49,7 +51,7 @@ CmdStop::CmdStop() {
   _uses_context = true;
   _accepts_filter = true;
   _accepts_modifications = true;
-  _accepts_miscellaneous = false;
+  _accepts_miscellaneous = true;  // Allow --message/-m flag
   _category = Command::Category::operation;
 }
 
@@ -70,6 +72,9 @@ int CmdStop::execute(std::string&) {
   // Accumulated project change notifications.
   std::map<std::string, std::string> projectChanges;
 
+  // Extract message from CLI2
+  std::string message = Context::getContext().cli2.getMessage();
+
   if (filtered.size() > 1) {
     feedback_affected("This command will alter {1} tasks.", filtered.size());
   }
@@ -81,15 +86,35 @@ int CmdStop::execute(std::string&) {
       std::string question =
           format("Stop task {1} '{2}'?", task.identifier(true), task.get("description"));
 
+      // Get stop time before removing start
+      time_t stop_time = time(nullptr);
+
       task.modify(Task::modAnnotate);
       task.remove("start");
 
       if (Context::getContext().config.getBoolean("journal.time"))
         task.addAnnotation(Context::getContext().config.get("journal.time.stop.annotation"));
 
+      // Add work interval message as annotation with interval timestamp
+      if (!message.empty()) {
+        task.addAnnotation(message, stop_time);
+      }
+
       if (permission(before.diff(task) + question, filtered.size())) {
         updateRecurrenceMask(task);
         Context::getContext().tdb2.modify(task);
+        
+        // Log work interval stop event (without message - it's in annotation now)
+        try {
+          WorkInterval::log_event(task.get("uuid"), "stop", stop_time);
+        } catch (const std::string& e) {
+          // Log error but don't fail the command
+          Context::getContext().debug(format("Failed to log work interval: {1}", e));
+        } catch (...) {
+          // Catch any other exception type
+          Context::getContext().debug("Failed to log work interval: unknown error");
+        }
+        
         ++count;
         feedback_affected("Stopping task {1} '{2}'.", task);
         dependencyChainOnStart(task);

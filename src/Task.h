@@ -143,6 +143,7 @@ class Task {
   std::map<std::string, std::string> getAnnotations() const;
   void setAnnotations(const std::map<std::string, std::string>&);
   void addAnnotation(const std::string&);
+  void addAnnotation(const std::string&, time_t timestamp);
   void removeAnnotations();
 
 #ifdef PRODUCT_TASKWARRIOR

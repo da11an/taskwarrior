@@ -64,6 +64,9 @@ class CLI2 {
   static bool getDataLocation(int, const char**, Path&);
   static void applyOverrides(int, const char**);
 
+  // Extract message from --message or -m flag
+  std::string getMessage() const;
+
  public:
   CLI2() = default;
   void alias(const std::string&, const std::string&);
