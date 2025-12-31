@@ -51,6 +51,7 @@
 #include <ColUntil.h>
 #include <ColUrgency.h>
 #include <ColWait.h>
+#include <ColWorkDuration.h>
 #include <Column.h>
 #include <Context.h>
 #include <format.h>
@@ -124,6 +125,8 @@ Column* Column::factory(const std::string& name, const std::string& report) {
     c = new ColumnUUID();
   else if (column_name == "wait")
     c = new ColumnWait();
+  else if (column_name == "workduration")
+    c = new ColumnWorkDuration();
 
   // UDA.
   else if (Context::getContext().config.has("uda." + column_name + ".type"))
@@ -187,6 +190,8 @@ void Column::factory(std::map<std::string, Column*>& all) {
   c = new ColumnUUID();
   all[c->_name] = c;
   c = new ColumnWait();
+  all[c->_name] = c;
+  c = new ColumnWorkDuration();
   all[c->_name] = c;
 
   Column::uda(all);
