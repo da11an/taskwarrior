@@ -21,10 +21,8 @@ CREATE TABLE IF NOT EXISTS work_intervals (
     task_uuid TEXT NOT NULL,           -- Task UUID (permanent identifier)
     event_type TEXT NOT NULL,          -- 'start', 'stop', or 'done'
     timestamp INTEGER NOT NULL,        -- Unix timestamp
-    message TEXT,                      -- Optional commit message (NULL for start events)
     interval_id INTEGER,                -- Links start/stop/done events that form an interval
-    created_at INTEGER NOT NULL,       -- When this record was created
-    FOREIGN KEY (task_uuid) REFERENCES tasks(uuid) ON DELETE CASCADE
+    created_at INTEGER NOT NULL        -- When this record was created
 );
 
 CREATE INDEX idx_work_intervals_task_uuid ON work_intervals(task_uuid);
@@ -34,9 +32,9 @@ CREATE INDEX idx_work_intervals_interval_id ON work_intervals(interval_id);
 
 **Design Notes:**
 - `interval_id` groups related start/stop/done events into work intervals
-- Messages are only stored for 'stop' and 'done' events (NULL for 'start')
+- **Messages are NOT stored in this table** - they are stored as Taskwarrior annotations with timestamps matching the interval events
 - Timestamps use Unix epoch (seconds since 1970-01-01)
-- Foreign key ensures data integrity (though TaskChampion may not expose this)
+- This design leverages Taskwarrior's existing annotation system, making messages visible in `task info` and avoiding data duplication
 
 ### Component Structure
 
@@ -45,10 +43,17 @@ src/
 ├── WorkInterval.h          # Header for WorkInterval class
 ├── WorkInterval.cpp        # Implementation of work interval management
 ├── commands/
-│   ├── CmdStart.cpp        # Modified to log start events
-│   ├── CmdStop.cpp         # Modified to log stop events + message
-│   └── CmdDone.cpp         # Modified to log done events + message
-└── TDB2.h/cpp              # May need to expose database path
+│   ├── CmdStart.cpp        # Modified to log start events (no messages)
+│   ├── CmdStop.cpp         # Modified to log stop events + add message as annotation
+│   ├── CmdDone.cpp         # Modified to log done events + add message as annotation
+│   ├── CmdIntervals.cpp    # New command to display intervals with annotations
+│   └── CmdSummary.cpp      # Modified to show total duration per project
+├── columns/
+│   ├── ColWorkDuration.h   # New column for work duration in list view
+│   └── ColWorkDuration.cpp
+├── CLI2.h/cpp              # Modified to parse --message/-m flags
+├── Context.h/cpp            # Modified to store message and initialize WorkInterval
+└── Task.h/cpp               # Modified to add annotation overload with timestamp
 ```
 
 ## Implementation Steps
@@ -71,13 +76,14 @@ class WorkInterval {
 public:
     static void initialize(const std::string& db_path);
     static void log_event(const std::string& task_uuid, 
-                         const std::string& event_type,
-                         time_t timestamp,
-                         const std::string& message = "");
+                         const std::string& event_type,  // "start", "stop", or "done"
+                         time_t timestamp);
     static std::vector<Interval> get_intervals(const std::string& task_uuid);
-    static std::vector<Interval> get_intervals_by_date(time_t start, time_t end);
+    // Note: Messages are handled separately via Task annotations
 };
 ```
+
+**Design Decision:** Messages are not passed to `log_event` because they are stored as Taskwarrior annotations with timestamps matching the interval events. This avoids duplication and makes messages visible in `task info`.
 
 #### Step 1.2: Database Access
 **Challenge:** TaskChampion manages the SQLite database. We need direct access.
@@ -91,9 +97,10 @@ public:
 2. **Extend TaskChampion**: Add Rust bindings (more complex, requires TaskChampion changes)
 
 **Implementation:**
-- Add SQLite3 dependency to CMakeLists.txt (if not already present)
-- Use libsqlite3 or rusqlite via FFI
-- Initialize table on first use (lazy initialization)
+- ✅ Added SQLite3 dependency to CMakeLists.txt (`target_link_libraries(task ... sqlite3)`)
+- ✅ Using libsqlite3 directly via SQLite C API
+- ✅ Initialize table on first use via `ensure_table_exists()` method
+- ✅ Exception handling: throws `std::string` (not `std::runtime_error`) to match Taskwarrior's error handling pattern
 
 ### Phase 2: Command-Line Interface
 
@@ -107,9 +114,11 @@ task 2 done -m "Completed feature implementation"
 ```
 
 **Implementation:**
-- Add message extraction in `CLI2::getMiscellaneous()` or new method
-- Store message in command context
-- Make available to command execution
+- ✅ Added `getMessage()` method to `CLI2` class
+- ✅ Added `_message` member to store extracted message
+- ✅ Updated `categorizeArgs()` to handle commands that accept filter, modifications, and miscellaneous arguments
+- ✅ Message values are tagged as `MISCELLANEOUS` (not `MODIFICATION`) to prevent them from being added as annotations automatically
+- ✅ Message stored in `Context` via `_message` member and `get_message()` accessor
 
 #### Step 2.2: Modify Commands
 
@@ -117,63 +126,110 @@ task 2 done -m "Completed feature implementation"
 ```cpp
 // After task.setAsNow("start")
 WorkInterval::log_event(task.get("uuid"), "start", time(nullptr));
+// Note: Start command does NOT accept messages
 ```
 
 **CmdStop.cpp:**
 ```cpp
+// Set _accepts_miscellaneous = true in constructor
 // Extract message from CLI2
-std::string message = Context::getContext().get_message(); // New method
+std::string message = Context::getContext().cli2.getMessage();
 
 // Before task.remove("start")
 time_t stop_time = time(nullptr);
-time_t start_time = task.get_date("start");
 
-// Log stop event
-WorkInterval::log_event(task.get("uuid"), "stop", stop_time, message);
+// Log stop event (no message parameter)
+WorkInterval::log_event(task.get("uuid"), "stop", stop_time);
+
+// Add message as annotation with stop timestamp if provided
+if (!message.empty()) {
+    task.addAnnotation(message, stop_time);
+}
 
 // Then proceed with existing stop logic
 ```
 
 **CmdDone.cpp:**
 ```cpp
+// Set _accepts_miscellaneous = true in constructor
 // Extract message from CLI2
-std::string message = Context::getContext().get_message();
+std::string message = Context::getContext().cli2.getMessage();
 
 // Before setting status to completed
 time_t done_time = time(nullptr);
 if (task.has("start")) {
-    time_t start_time = task.get_date("start");
-    // Log done event (which also closes the interval)
-    WorkInterval::log_event(task.get("uuid"), "done", done_time, message);
+    // Log done event (no message parameter)
+    WorkInterval::log_event(task.get("uuid"), "done", done_time);
+    
+    // Add message as annotation with done timestamp if provided
+    if (!message.empty()) {
+        task.addAnnotation(message, done_time);
+    }
+    
     task.remove("start");
 }
 ```
 
+**Key Design Decisions:**
+- Messages are stored as Taskwarrior annotations (not in `work_intervals` table)
+- Annotations use timestamps matching the interval event times
+- Added `Task::addAnnotation(const std::string&, time_t)` overload to support timestamped annotations
+- `Task::modify()` was updated to skip `MISCELLANEOUS` arguments to prevent message values from being added as annotations twice
+
 ### Phase 3: Query and Display
 
-#### Step 3.1: New Command or Extend Existing
-**Option A:** New command `task intervals <filter>`
-**Option B:** Extend `task timesheet` or `task history`
-
-**Recommended:** New command `CmdIntervals` for clarity
-
-**File:** `src/commands/CmdIntervals.cpp`
+#### Step 3.1: New Command `CmdIntervals`
+**File:** `src/commands/CmdIntervals.cpp` and `src/commands/CmdIntervals.h`
 
 **Features:**
-- List intervals for filtered tasks
-- Show duration, timestamps, messages
-- Filter by date range
-- Export to various formats
+- ✅ List intervals for filtered tasks
+- ✅ Show duration, timestamps (start and end)
+- ✅ Display annotations categorized into three columns:
+  - **Start Note**: Annotations within 2 seconds of interval start
+  - **During**: Annotations between start and end (excluding edge cases)
+  - **End Note**: Annotations within 2 seconds of interval end
+- ✅ Multiple annotations are joined with semicolons
+- ✅ Shows total duration at the bottom if multiple intervals exist
+- ✅ Uses `Table` class for formatted output with proper column alignment
+
+**Example Output:**
+```
+ID Start              End                Duration Start Note During End Note
+-- ------------------ ------------------ -------- ---------- ------ --------
+ 1 2024-01-15 10:00:00 2024-01-15 11:30:00 1:30:00           Fixed bug
+ 1 2024-01-15 14:00:00 2024-01-15 16:45:00 2:45:00           All tests passing
+
+Total time: 4:15:00
+```
+
+#### Step 3.2: New Column `workduration`
+**File:** `src/columns/ColWorkDuration.cpp` and `src/columns/ColWorkDuration.h`
+
+**Features:**
+- ✅ Displays total duration of all work intervals for a task
+- ✅ Added to default `list` report configuration
+- ✅ Label: "Duration" (user preference over "Work")
+- ✅ Right-aligned, formatted using `Duration::format()`
+
+#### Step 3.3: Summary Command Enhancement
+**File:** `src/commands/CmdSummary.cpp`
+
+**Features:**
+- ✅ Added "Duration" column showing total duration per project
+- ✅ Sums all work intervals for all tasks in each project
+- ✅ Includes parent projects in hierarchical project structures
 
 ### Phase 4: Integration Points
 
 #### Step 4.1: Context Integration
 **File:** `src/Context.h` and `src/Context.cpp`
 
-Add:
-- Message storage from CLI2
-- WorkInterval initialization on startup
-- Database path accessor
+**Implemented:**
+- ✅ Added `_message` member to `Context` class
+- ✅ Added `get_message()` accessor method
+- ✅ `WorkInterval::initialize()` called after TaskChampion replica is opened
+- ✅ Database path obtained from `data.location` config + `/taskchampion.sqlite3`
+- ✅ Default `report.list.columns` and `report.list.labels` updated to include `workduration`
 
 #### Step 4.2: TDB2 Integration
 **File:** `src/TDB2.h` and `src/TDB2.cpp`
@@ -228,10 +284,21 @@ Options:
 
 ### Message Storage
 
-- Store as TEXT (SQLite handles this well)
-- No length limit (or reasonable limit like 10KB)
-- UTF-8 encoding
-- Allow multi-line messages (store as-is, display with formatting)
+**Design Decision:** Messages are stored as Taskwarrior annotations, not in the `work_intervals` table.
+
+**Rationale:**
+- Leverages existing Taskwarrior annotation system
+- Messages visible in `task info` command
+- Avoids data duplication
+- Annotations are timestamped, matching interval event times
+- No need for separate message storage mechanism
+
+**Implementation:**
+- Added `Task::addAnnotation(const std::string&, time_t)` overload
+- Messages added with timestamps matching stop/done event times
+- Annotations stored in task data as `annotation_<timestamp>` keys
+- UTF-8 encoding, no length limit (Taskwarrior handles this)
+- Multi-line messages supported (stored as-is)
 
 ### Database Migration
 
@@ -245,22 +312,35 @@ Options:
 # Start working on task
 task 1 start
 
-# Stop with message
+# Stop with message (message becomes an annotation)
 task 1 stop --message "Fixed authentication bug, need to test"
 
 # Resume work
 task 1 start
 
-# Complete with message
+# Complete with message (message becomes an annotation)
 task 1 done -m "All tests passing, ready for review"
 
-# View intervals
+# View intervals with annotations
 task 1 intervals
 # Output:
-# Interval 1: 2024-01-15 10:00 - 2024-01-15 11:30 (1h 30m)
-#   Message: Fixed authentication bug, need to test
-# Interval 2: 2024-01-15 14:00 - 2024-01-15 16:45 (2h 45m)
-#   Message: All tests passing, ready for review
+# ID Start              End                Duration Start Note During End Note
+# -- ------------------ ------------------ -------- ---------- ------ --------
+#  1 2024-01-15 10:00:00 2024-01-15 11:30:00 1:30:00           Fixed bug
+#  1 2024-01-15 14:00:00 2024-01-15 16:45:00 2:45:00           All tests passing
+#
+# Total time: 4:15:00
+
+# View task info (annotations visible here too)
+task 1 info
+
+# List tasks with duration column
+task list
+# Shows Duration column with total time per task
+
+# Summary by project with total duration
+task summary
+# Shows Duration column with total time per project
 ```
 
 ## Dependencies
@@ -271,10 +351,12 @@ task 1 intervals
 ## Future Enhancements
 
 1. **Interval editing**: Modify or delete intervals
-2. **Time reports**: Aggregate time by project, tag, date
+2. **Time reports**: Aggregate time by project, tag, date (partially implemented in summary)
 3. **Export**: Export intervals to CSV, JSON, timewarrior format
 4. **Sync**: Include intervals in sync (if TaskChampion supports custom tables)
-5. **UI**: Better formatting for interval display
+5. **UI**: Better formatting for interval display (currently using Table class)
+6. **Date range filtering**: Filter intervals by date range in `intervals` command
+7. **Duration formatting options**: Configurable duration display formats
 
 ## Risks and Mitigations
 
@@ -288,11 +370,14 @@ task 1 intervals
 ## Success Criteria
 
 1. ✅ Start/stop/done commands log intervals
-2. ✅ Messages can be added to stop/done commands
+2. ✅ Messages can be added to stop/done commands (stored as annotations)
 3. ✅ Intervals are queryable by task UUID
 4. ✅ Intervals persist across sessions
 5. ✅ Interval durations are calculable
-6. ✅ Tests pass
+6. ✅ New `intervals` command displays intervals with categorized annotations
+7. ✅ New `workduration` column shows total duration in list view
+8. ✅ Summary command shows total duration per project
+9. ⏳ Tests pass (pending - Phase 5 not yet completed)
 
 ## Timeline Estimate
 
@@ -303,3 +388,55 @@ task 1 intervals
 - Phase 5 (Testing): 2-3 days
 
 **Total: 7-11 days** for a complete implementation
+
+## Implementation Status
+
+### Completed (Phases 1-4)
+
+✅ **Phase 1: Core Infrastructure**
+- WorkInterval class created with SQLite direct access
+- Database table creation with proper indexes
+- Event logging (start/stop/done) without messages
+- Interval querying by task UUID
+- Exception handling using `std::string` (matching Taskwarrior pattern)
+
+✅ **Phase 2: Command-Line Interface**
+- CLI2 extended to parse `--message`/`-m` flags
+- Message extraction and storage in Context
+- CmdStart modified (no message support)
+- CmdStop modified (accepts messages, stores as annotations)
+- CmdDone modified (accepts messages, stores as annotations)
+- Task::addAnnotation overload added for timestamped annotations
+
+✅ **Phase 3: Query and Display**
+- New `intervals` command with table output
+- Annotation categorization (Start Note, During, End Note)
+- New `workduration` column for list view
+- Summary command enhanced with duration aggregation
+
+✅ **Phase 4: Integration Points**
+- Context integration (message storage, WorkInterval initialization)
+- Default report configuration updated
+- Database path resolution from config
+
+### Pending
+
+⏳ **Phase 5: Testing**
+- Unit tests for WorkInterval class
+- Integration tests for full workflow
+- Test message storage as annotations
+- Test interval querying and display
+
+## Key Design Decisions Made
+
+1. **Messages as Annotations**: Instead of storing messages in the `work_intervals` table, messages are stored as Taskwarrior annotations with timestamps matching interval events. This avoids duplication and makes messages visible in `task info`.
+
+2. **No Messages on Start**: The `start` command does not accept messages, only `stop` and `done` commands do.
+
+3. **Exception Handling**: Uses `std::string` exceptions (not `std::runtime_error`) to match Taskwarrior's error handling pattern.
+
+4. **Column Label**: Uses "Duration" instead of "Work" based on user preference.
+
+5. **Annotation Categorization**: The `intervals` command categorizes annotations into three columns based on their timestamps relative to interval start/end times, with a 2-second tolerance for edge cases.
+
+6. **Direct SQLite Access**: Uses direct SQLite C API access rather than extending TaskChampion, keeping the implementation simpler and independent.
