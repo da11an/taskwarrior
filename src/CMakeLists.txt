@@ -20,6 +20,7 @@ add_library (task STATIC CLI2.cpp
                   Variant.cpp
                   Version.cpp
                   ViewTask.cpp
+                  WorkInterval.cpp
                   dependency.cpp
                   feedback.cpp
                   legacy.cpp
@@ -28,7 +29,7 @@ add_library (task STATIC CLI2.cpp
                   rules.cpp
                   sort.cpp
                   util.cpp)
-target_link_libraries(task taskchampion-cpp)
+target_link_libraries(task taskchampion-cpp sqlite3)
 
 add_library (libshared STATIC libshared/src/Color.cpp
                        libshared/src/Configuration.cpp
