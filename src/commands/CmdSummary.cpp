@@ -32,6 +32,7 @@
 #include <Duration.h>
 #include <Filter.h>
 #include <Table.h>
+#include <WorkInterval.h>
 #include <format.h>
 #include <sort.h>
 #include <stdlib.h>
@@ -80,6 +81,7 @@ int CmdSummary::execute(std::string& output) {
   std::map<std::string, int> countCompleted;
   std::map<std::string, double> sumEntry;
   std::map<std::string, int> counter;
+  std::map<std::string, time_t> sumDuration;
   time_t now = time(nullptr);
 
   // Initialize counters.
@@ -88,6 +90,7 @@ int CmdSummary::execute(std::string& output) {
     countCompleted[project.first] = 0;
     sumEntry[project.first] = 0.0;
     counter[project.first] = 0;
+    sumDuration[project.first] = 0;
   }
 
   // Count the various tasks.
@@ -97,6 +100,18 @@ int CmdSummary::execute(std::string& output) {
     projects.push_back(project);
 
     for (auto& parent : projects) ++counter[parent];
+
+    // Calculate total duration for this task
+    time_t task_duration = 0;
+    std::vector<Interval> intervals = WorkInterval::get_intervals(task.get("uuid"));
+    for (const auto& interval : intervals) {
+      task_duration += interval.duration();
+    }
+
+    // Add duration to all parent projects
+    for (auto& parent : projects) {
+      sumDuration[parent] += task_duration;
+    }
 
     if (task.getStatus() == Task::pending || task.getStatus() == Task::waiting) {
       for (auto& parent : projects) {
@@ -125,6 +140,7 @@ int CmdSummary::execute(std::string& output) {
   view.add("Remaining", false);
   view.add("Avg age", false);
   view.add("Complete", false);
+  view.add("Duration", false);
   view.add("0%                        100%", true, false);
   setHeaderUnderline(view);
 
@@ -156,6 +172,14 @@ int CmdSummary::execute(std::string& output) {
     int completedBar = 0;
     if (c + p) completedBar = (c * barWidth) / (c + p);
 
+    char percent[12] = "0%";
+    if (c + p) snprintf(percent, 12, "%d%%", 100 * c / (c + p));
+    view.set(row, 3, percent);
+
+    // Display total duration
+    Duration total_duration(sumDuration[i.first]);
+    view.set(row, 4, total_duration.format());
+
     std::string bar;
     std::string subbar;
     if (Context::getContext().color()) {
@@ -164,11 +188,7 @@ int CmdSummary::execute(std::string& output) {
     } else {
       bar += std::string(completedBar, '=') + std::string(barWidth - completedBar, ' ');
     }
-    view.set(row, 4, bar);
-
-    char percent[12] = "0%";
-    if (c + p) snprintf(percent, 12, "%d%%", 100 * c / (c + p));
-    view.set(row, 3, percent);
+    view.set(row, 5, bar);
   }
 
   std::stringstream out;
