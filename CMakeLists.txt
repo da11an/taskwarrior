@@ -98,6 +98,34 @@ else (HAVE_UUID_UNPARSE_LOWER)
   message ("-- Found libuuid, using internal uuid_unparse_lower")
 endif (HAVE_UUID_UNPARSE_LOWER)
 
+# Find SQLite3 (required for work intervals feature)
+message ("-- Looking for SQLite3")
+find_package (SQLite3)
+if (SQLite3_FOUND)
+  message ("-- Found SQLite3: ${SQLite3_VERSION}")
+  include_directories (${SQLite3_INCLUDE_DIRS})
+else (SQLite3_FOUND)
+  # Fallback: try to find it manually
+  find_path (SQLite3_INCLUDE_DIR sqlite3.h
+    PATHS
+    /usr/include
+    /usr/local/include
+    /opt/local/include
+  )
+  find_library (SQLite3_LIBRARY sqlite3
+    PATHS
+    /usr/lib
+    /usr/local/lib
+    /opt/local/lib
+  )
+  if (SQLite3_INCLUDE_DIR AND SQLite3_LIBRARY)
+    message ("-- Found SQLite3 (manual search)")
+    include_directories (${SQLite3_INCLUDE_DIR})
+  else (SQLite3_INCLUDE_DIR AND SQLite3_LIBRARY)
+    message (FATAL_ERROR "-- SQLite3 not found. Please install libsqlite3-dev (Debian/Ubuntu) or sqlite-devel (Fedora/RHEL)")
+  endif (SQLite3_INCLUDE_DIR AND SQLite3_LIBRARY)
+endif (SQLite3_FOUND)
+
 if (HAIKU)
   # search for socket() in libnetwork on Haiku
   message("-- Looking for libnetwork")
