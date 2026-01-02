@@ -35,6 +35,7 @@
 #include <Lexer.h>
 #include <format.h>
 #include <shared.h>
+#include <util.h>
 #include <stdlib.h>
 #include <utf8.h>
 
@@ -1378,7 +1379,23 @@ void CLI2::findIDs() {
           if (!previousFilterArgWasAnOperator) {
             changes = true;
             std::string number = a.attribute("raw");
-            _id_ranges.emplace_back(number, number);
+            // Check for interval syntax: task-id.interval-id
+            auto dot_pos = number.find('.');
+            if (dot_pos != std::string::npos) {
+              std::string task_id_str = number.substr(0, dot_pos);
+              std::string interval_id_str = number.substr(dot_pos + 1);
+              // Validate: both parts should be integers
+              long task_id = 0, interval_id = 0;
+              if (extractLongInteger(task_id_str, task_id) && extractLongInteger(interval_id_str, interval_id)) {
+                _interval_ids[static_cast<int>(task_id)] = static_cast<int>(interval_id);
+                _id_ranges.emplace_back(task_id_str, task_id_str);
+              } else {
+                // Invalid format, treat as regular ID
+                _id_ranges.emplace_back(number, number);
+              }
+            } else {
+              _id_ranges.emplace_back(number, number);
+            }
           }
         } else if (a._lextype == Lexer::Type::set) {
           // Split the ID list into elements.
@@ -1386,11 +1403,39 @@ void CLI2::findIDs() {
 
           for (auto& element : elements) {
             changes = true;
-            auto hyphen = element.find('-');
-            if (hyphen != std::string::npos)
-              _id_ranges.emplace_back(element.substr(0, hyphen), element.substr(hyphen + 1));
-            else
-              _id_ranges.emplace_back(element, element);
+            // Check for interval syntax: task-id.interval-id
+            auto dot_pos = element.find('.');
+            if (dot_pos != std::string::npos) {
+              std::string task_id_str = element.substr(0, dot_pos);
+              std::string interval_id_str = element.substr(dot_pos + 1);
+              // Validate: both parts should be integers
+              long task_id = 0, interval_id = 0;
+              if (extractLongInteger(task_id_str, task_id) && extractLongInteger(interval_id_str, interval_id)) {
+                _interval_ids[static_cast<int>(task_id)] = static_cast<int>(interval_id);
+                // Check for range in task ID part (e.g., "5-10.2")
+                auto hyphen = task_id_str.find('-');
+                if (hyphen != std::string::npos) {
+                  // Range with interval ID not supported, treat as regular range
+                  _id_ranges.emplace_back(element.substr(0, dot_pos), element.substr(dot_pos + 1));
+                } else {
+                  _id_ranges.emplace_back(task_id_str, task_id_str);
+                }
+              } else {
+                // Invalid format, check for regular range
+                auto hyphen = element.find('-');
+                if (hyphen != std::string::npos)
+                  _id_ranges.emplace_back(element.substr(0, hyphen), element.substr(hyphen + 1));
+                else
+                  _id_ranges.emplace_back(element, element);
+              }
+            } else {
+              // No dot, check for regular range
+              auto hyphen = element.find('-');
+              if (hyphen != std::string::npos)
+                _id_ranges.emplace_back(element.substr(0, hyphen), element.substr(hyphen + 1));
+              else
+                _id_ranges.emplace_back(element, element);
+            }
           }
         }
 
@@ -1410,13 +1455,27 @@ void CLI2::findIDs() {
           std::string raw = a.attribute("raw");
 
           // For a number to be an ID, it must not contain any sign or floating
-          // point elements.
-          if (a._lextype == Lexer::Type::number && raw.find('.') == std::string::npos &&
-              raw.find('e') == std::string::npos && raw.find('-') == std::string::npos) {
+          // point elements (except for interval syntax: X.Y).
+          if (a._lextype == Lexer::Type::number && raw.find('e') == std::string::npos && raw.find('-') == std::string::npos) {
             changes = true;
             a.unTag("MODIFICATION");
             a.tag("FILTER");
-            _id_ranges.emplace_back(raw, raw);
+            // Check for interval syntax: task-id.interval-id
+            auto dot_pos = raw.find('.');
+            if (dot_pos != std::string::npos) {
+              std::string task_id_str = raw.substr(0, dot_pos);
+              std::string interval_id_str = raw.substr(dot_pos + 1);
+              long task_id = 0, interval_id = 0;
+              if (extractLongInteger(task_id_str, task_id) && extractLongInteger(interval_id_str, interval_id)) {
+                _interval_ids[static_cast<int>(task_id)] = static_cast<int>(interval_id);
+                _id_ranges.emplace_back(task_id_str, task_id_str);
+              } else {
+                // Invalid format, treat as regular ID
+                _id_ranges.emplace_back(raw, raw);
+              }
+            } else {
+              _id_ranges.emplace_back(raw, raw);
+            }
           } else if (a._lextype == Lexer::Type::set) {
             a.unTag("MODIFICATION");
             a.tag("FILTER");
@@ -1426,11 +1485,31 @@ void CLI2::findIDs() {
 
             for (const auto& element : elements) {
               changes = true;
-              auto hyphen = element.find('-');
-              if (hyphen != std::string::npos)
-                _id_ranges.emplace_back(element.substr(0, hyphen), element.substr(hyphen + 1));
-              else
-                _id_ranges.emplace_back(element, element);
+              // Check for interval syntax: task-id.interval-id
+              auto dot_pos = element.find('.');
+              if (dot_pos != std::string::npos) {
+                std::string task_id_str = element.substr(0, dot_pos);
+                std::string interval_id_str = element.substr(dot_pos + 1);
+                long task_id = 0, interval_id = 0;
+                if (extractLongInteger(task_id_str, task_id) && extractLongInteger(interval_id_str, interval_id)) {
+                  _interval_ids[static_cast<int>(task_id)] = static_cast<int>(interval_id);
+                  _id_ranges.emplace_back(task_id_str, task_id_str);
+                } else {
+                  // Invalid format, check for regular range
+                  auto hyphen = element.find('-');
+                  if (hyphen != std::string::npos)
+                    _id_ranges.emplace_back(element.substr(0, hyphen), element.substr(hyphen + 1));
+                  else
+                    _id_ranges.emplace_back(element, element);
+                }
+              } else {
+                // No dot, check for regular range
+                auto hyphen = element.find('-');
+                if (hyphen != std::string::npos)
+                  _id_ranges.emplace_back(element.substr(0, hyphen), element.substr(hyphen + 1));
+                else
+                  _id_ranges.emplace_back(element, element);
+              }
             }
           }
         }

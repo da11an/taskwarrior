@@ -154,3 +154,100 @@ std::vector<Interval> WorkInterval::get_intervals_by_date(time_t start_time,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+void WorkInterval::modify_interval(const std::string& task_uuid,
+                                   int interval_id,
+                                   const std::string& attribute,
+                                   time_t new_timestamp) {
+  ensure_table_exists();
+
+  // Validate attribute
+  std::string event_type;
+  if (attribute == "start") {
+    event_type = "start";
+  } else if (attribute == "stop" || attribute == "end") {
+    event_type = "stop";  // Rust function handles both stop and done
+  } else {
+    throw std::string(format("Invalid attribute '{1}'. Must be 'start', 'stop', or 'end'.", attribute));
+  }
+
+  // Get the interval to validate it exists and check for overlaps
+  std::vector<Interval> intervals = get_intervals(task_uuid);
+  Interval* target_interval = nullptr;
+  for (auto& interval : intervals) {
+    if (interval.interval_id == interval_id) {
+      target_interval = &interval;
+      break;
+    }
+  }
+
+  if (!target_interval) {
+    throw std::string(format("Interval with ID {1} not found for task {2}.", interval_id, task_uuid));
+  }
+
+  // Validate new timestamp doesn't create overlaps
+  time_t new_start = target_interval->start_time;
+  time_t new_end = target_interval->end_time;
+  bool is_open = target_interval->is_open;
+
+  if (event_type == "start") {
+    new_start = new_timestamp;
+    // Check overlap with previous interval
+    for (const auto& interval : intervals) {
+      if (interval.interval_id != interval_id && !interval.is_open && interval.end_time > new_start) {
+        if (interval.start_time < new_start) {
+          throw std::string(format("Cannot modify interval: would create overlap with interval {1}.{2}",
+                                   task_uuid, interval.interval_id));
+        }
+      }
+    }
+    // Validate start < end (if not open)
+    if (!is_open && new_start >= new_end) {
+      throw std::string("Cannot modify interval: start time must be before stop time.");
+    }
+  } else {
+    // stop/end
+    new_end = new_timestamp;
+    // If modifying stop time of open interval, it becomes closed
+    is_open = false;
+    // Check overlap with next interval
+    for (const auto& interval : intervals) {
+      if (interval.interval_id != interval_id && interval.start_time < new_end) {
+        if (!interval.is_open || interval.start_time > new_start) {
+          throw std::string(format("Cannot modify interval: would create overlap with interval {1}.{2}",
+                                   task_uuid, interval.interval_id));
+        }
+      }
+    }
+    // Validate start < end
+    if (new_start >= new_end) {
+      throw std::string("Cannot modify interval: start time must be before stop time.");
+    }
+  }
+
+  // Update the timestamp via Rust bridge
+  std::string taskdb_dir = get_db_path();
+  try {
+    tc::work_interval_update_timestamp(taskdb_dir, task_uuid, interval_id, event_type,
+                                      static_cast<int64_t>(new_timestamp));
+  } catch (const std::exception& e) {
+    std::string error = format("Cannot update interval timestamp: {1}", e.what());
+    throw error;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void WorkInterval::fill_interval(const std::string& task_uuid,
+                                 int interval_id,
+                                 const std::string& fill_type) {
+  ensure_table_exists();
+
+  std::string taskdb_dir = get_db_path();
+  try {
+    tc::work_interval_fill(taskdb_dir, task_uuid, interval_id, fill_type);
+  } catch (const std::exception& e) {
+    std::string error = format("Cannot fill interval: {1}", e.what());
+    throw error;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////

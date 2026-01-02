@@ -77,6 +77,19 @@ class WorkInterval {
   // Get the next interval_id for a task (used to link start/stop/done events)
   static int get_next_interval_id(const std::string& task_uuid);
 
+  // Modify an interval's start or stop time
+  // attribute: "start", "stop", or "end" (end is alias for stop)
+  static void modify_interval(const std::string& task_uuid,
+                             int interval_id,
+                             const std::string& attribute,
+                             time_t new_timestamp);
+
+  // Fill an interval to meet neighbors (task-agnostic)
+  // fill_type: "start", "stop", or "both"
+  static void fill_interval(const std::string& task_uuid,
+                           int interval_id,
+                           const std::string& fill_type);
+
  private:
   // Ensure the table exists (lazy initialization)
   static void ensure_table_exists();

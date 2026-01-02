@@ -29,11 +29,17 @@
 
 #include <CmdModify.h>
 #include <Context.h>
+#include <Duration.h>
+#include <Eval.h>
 #include <Filter.h>
+#include <Variant.h>
+#include <WorkInterval.h>
+#include <Datetime.h>
 #include <feedback.h>
 #include <format.h>
 #include <recur.h>
 #include <shared.h>
+#include <Task.h>
 
 #include <iostream>
 
@@ -73,12 +79,185 @@ int CmdModify::execute(std::string&) {
   // Accumulated project change notifications.
   std::map<std::string, std::string> projectChanges;
 
+  // Check if we're in interval context (have interval IDs)
+  bool in_interval_context = !Context::getContext().cli2._interval_ids.empty();
+  
+  // If in interval context, handle interval modifications separately
+  if (in_interval_context) {
+    bool interval_mods_processed = false;
+    // Process interval modifications for each task
+    for (auto& task : filtered) {
+      int task_id = task.id;
+      auto it = Context::getContext().cli2._interval_ids.find(task_id);
+      if (it != Context::getContext().cli2._interval_ids.end()) {
+        int interval_id = it->second;
+        std::string task_uuid = task.get("uuid");
+        
+        // Extract interval-related modifications from args
+        for (const auto& arg : Context::getContext().cli2._args) {
+          if (arg.hasTag("MODIFICATION") && arg._lextype == Lexer::Type::pair) {
+            std::string name = arg.attribute("canonical");
+            std::string value = arg.attribute("value");
+            
+            if (name == "start" || name == "stop" || name == "end") {
+              interval_mods_processed = true;
+              // Parse the datetime value using Variant (handles relative durations like -1h, +30min)
+              try {
+                // Get current interval to determine base time for relative durations
+                std::vector<Interval> intervals = WorkInterval::get_intervals(task_uuid);
+                time_t base_time = 0;
+                bool is_relative = false;
+                
+                // Find the current interval to get base time
+                for (const auto& interval : intervals) {
+                  if (interval.interval_id == interval_id) {
+                    if (name == "start") {
+                      base_time = interval.start_time;
+                    } else {
+                      // For stop/end, use end_time or current time if open
+                      base_time = interval.is_open ? time(nullptr) : interval.end_time;
+                    }
+                    break;
+                  }
+                }
+                
+                if (base_time == 0) {
+                  throw std::string(format("Interval with ID {1} not found for task {2}.", interval_id, task_uuid));
+                }
+                
+                // Check if value looks like a relative duration (starts with + or -)
+                std::string trimmed_value = value;
+                while (trimmed_value.length() > 0 && (trimmed_value[0] == ' ' || trimmed_value[0] == '\t')) {
+                  trimmed_value = trimmed_value.substr(1);
+                }
+                bool is_negative = (trimmed_value.length() > 0 && trimmed_value[0] == '-');
+                bool is_positive = (trimmed_value.length() > 0 && trimmed_value[0] == '+');
+                is_relative = (is_negative || is_positive);
+                
+                Variant evaluatedValue;
+                time_t timestamp;
+                
+                if (is_relative) {
+                  // For relative durations, parse the duration part (without the sign)
+                  std::string duration_str = trimmed_value;
+                  if (is_negative || is_positive) {
+                    duration_str = trimmed_value.substr(1); // Remove leading + or -
+                  }
+                  
+                  // Check if duration ends with just "m" - this is ambiguous (month vs minute)
+                  if (duration_str.length() > 0 && duration_str[duration_str.length() - 1] == 'm') {
+                    // Check if it's just a number followed by 'm' (e.g., "5m", "30m")
+                    bool is_just_m = true;
+                    for (size_t i = 0; i < duration_str.length() - 1; ++i) {
+                      if (!std::isdigit(duration_str[i]) && duration_str[i] != '.' && duration_str[i] != '+' && duration_str[i] != '-') {
+                        is_just_m = false;
+                        break;
+                      }
+                    }
+                    if (is_just_m) {
+                      // "m" is ambiguous - could mean month or minute
+                      throw std::string(format("Ambiguous duration unit 'm'. Use 'min' for minutes or 'mo' for months. Example: '{1}min' or '{1}mo'.", duration_str.substr(0, duration_str.length() - 1)));
+                    }
+                  }
+                  
+                  // Parse duration directly using Duration class
+                  // Check if parse succeeded by testing parse result
+                  std::string::size_type parse_pos = 0;
+                  Duration test_duration;
+                  bool parse_succeeded = test_duration.parse(duration_str, parse_pos) && parse_pos == duration_str.length();
+                  
+                  if (parse_succeeded) {
+                    // Parse succeeded - use the parsed duration
+                    time_t duration_seconds = test_duration.toTime_t();
+                    // duration_seconds should be the duration in seconds
+                    // Apply the sign - if negative, make duration negative
+                    if (is_negative) {
+                      duration_seconds = -duration_seconds;
+                    }
+                    // Add the duration to the base time
+                    timestamp = base_time + duration_seconds;
+                  } else {
+                    // Parse failed, try Variant/Eval
+                    try {
+                      Variant durationValue(duration_str);
+                      durationValue.cast(Variant::type_duration);
+                      time_t duration_seconds = durationValue.get_duration();
+                      if (is_negative) {
+                        duration_seconds = -duration_seconds;
+                      }
+                      timestamp = base_time + duration_seconds;
+                    } catch (const std::string& e) {
+                      throw e;
+                    } catch (...) {
+                      throw std::string(format("Cannot parse duration '{1}'.", value));
+                    }
+                  }
+                } else {
+                  // Parse as absolute date/time
+                  try {
+                    Eval e;
+                    e.addSource(domSource);
+                    e.evaluateInfixExpression(value, evaluatedValue);
+                  } catch (...) {
+                    evaluatedValue = Variant(value);
+                  }
+                  
+                  // Convert to date (handles duration -> date conversion)
+                  if (evaluatedValue.type() == Variant::type_duration) {
+                    evaluatedValue.cast(Variant::type_date);
+                  } else {
+                    evaluatedValue.cast(Variant::type_date);
+                  }
+                  
+                  timestamp = evaluatedValue.get_date();
+                  if (timestamp == 0 && value != "") {
+                    throw std::string(format("'{1}' is not a valid date or duration.", value));
+                  }
+                }
+                
+                // Apply interval modification
+                WorkInterval::modify_interval(task_uuid, interval_id, name, timestamp);
+                feedback_affected(format("Modified interval {1}.{2} {3} time.", task_id, interval_id, name));
+              } catch (const std::string& e) {
+                throw e;
+              } catch (const std::exception& e) {
+                throw std::string(format("Cannot modify interval: {1}", e.what()));
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // If we processed interval modifications, return early (don't process task modifications)
+    if (interval_mods_processed) {
+      return rc;
+    }
+    
+    // If we're in interval context but no interval mods were found, error out
+    // Interval context only supports start:, stop:, and end: modifications
+    Context::getContext().footnote("In interval context, only 'start:', 'stop:', or 'end:' modifications are allowed. Use 'task <id>.<interval-id> modify start:<time>' or similar.");
+    return 1;
+  }
+
   auto count = 0;
   if (filtered.size() > 1) {
     feedback_affected("This command will alter {1} tasks.", filtered.size());
   }
   for (auto& task : filtered) {
     Task before(task);
+    
+    // If in interval context, skip start/stop/end attributes for this task
+    bool skip_interval_attrs = in_interval_context && 
+                                Context::getContext().cli2._interval_ids.find(task.id) != 
+                                Context::getContext().cli2._interval_ids.end();
+    
+    if (skip_interval_attrs) {
+      // Temporarily remove interval attributes from processing
+      // We'll handle this by modifying Task::modify to check interval context
+      // For now, let's process normally but the interval mods are already done
+    }
+    
     task.modify(Task::modReplace);
 
     if (before != task) {

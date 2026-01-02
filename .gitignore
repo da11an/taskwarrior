@@ -14,3 +14,4 @@ tutorials
 *.tar.gz
 *.zip
 *.tgz
+*.pyc

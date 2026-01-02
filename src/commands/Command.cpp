@@ -67,6 +67,7 @@
 #include <CmdImportV2.h>
 #include <CmdInfo.h>
 #include <CmdIntervals.h>
+#include <CmdFill.h>
 #include <CmdLog.h>
 #include <CmdLogo.h>
 #include <CmdModify.h>
@@ -193,6 +194,8 @@ void Command::factory(std::map<std::string, Command*>& all) {
   c = new CmdInfo();
   all[c->keyword()] = c;
   c = new CmdIntervals();
+  all[c->keyword()] = c;
+  c = new CmdFill();
   all[c->keyword()] = c;
   c = new CmdLog();
   all[c->keyword()] = c;

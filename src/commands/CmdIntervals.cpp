@@ -36,6 +36,7 @@
 #include <WorkInterval.h>
 #include <format.h>
 #include <shared.h>
+#include <utf8.h>
 
 #include <iomanip>
 #include <sstream>
@@ -82,6 +83,8 @@ int CmdIntervals::execute(std::string& output) {
 
   // Header
   view.add("ID", false);      // Right-align ID
+  view.add("Interval", false); // Right-align Interval ID
+  view.add("Description");
   view.add("Start");
   view.add("End");
   view.add("Duration", false); // Right-align Duration
@@ -115,24 +118,37 @@ int CmdIntervals::execute(std::string& output) {
       // Set ID (column 0)
       view.set(row, 0, task.identifier(true));
       
-      // Format start time (column 1)
-      Datetime start_dt(interval.start_time);
-      view.set(row, 1, start_dt.toString(dateformat));
+      // Set Interval ID (column 1)
+      view.set(row, 1, format("{1}", interval.interval_id));
       
-      // Format end time (column 2)
+      // Set Description (column 2) - 20 character snippet
+      std::string description = task.get("description");
+      std::string short_desc;
+      if (utf8_width(description) > 20) {
+        short_desc = utf8_substr(description, 0, 20) + "...";
+      } else {
+        short_desc = description;
+      }
+      view.set(row, 2, short_desc);
+      
+      // Format start time (column 3)
+      Datetime start_dt(interval.start_time);
+      view.set(row, 3, start_dt.toString(dateformat));
+      
+      // Format end time (column 4)
       // For open intervals, show "ongoing" or current time
       if (interval.is_open) {
-        view.set(row, 2, "ongoing");
+        view.set(row, 4, "ongoing");
       } else {
         Datetime end_dt(interval.end_time);
-        view.set(row, 2, end_dt.toString(dateformat));
+        view.set(row, 4, end_dt.toString(dateformat));
       }
       
-      // Calculate and format duration (column 3)
+      // Calculate and format duration (column 5)
       time_t duration_sec = interval.duration();
       total_duration += duration_sec;
       Duration duration(duration_sec);
-      view.set(row, 3, duration.format());
+      view.set(row, 5, duration.format());
       
       // Collect all annotations within this interval
       // Annotations are stored as annotation_<timestamp>
@@ -202,10 +218,10 @@ int CmdIntervals::execute(std::string& output) {
         return result;
       };
       
-      // Set annotation columns (4, 5, 6)
-      view.set(row, 4, join_notes(start_notes));
-      view.set(row, 5, join_notes(during_notes));
-      view.set(row, 6, join_notes(end_notes));
+      // Set annotation columns (6, 7, 8)
+      view.set(row, 6, join_notes(start_notes));
+      view.set(row, 7, join_notes(during_notes));
+      view.set(row, 8, join_notes(end_notes));
     }
   }
 

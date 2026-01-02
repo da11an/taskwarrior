@@ -1977,6 +1977,25 @@ void Task::modify(modType type, bool text_required /* = false */) {
         // 'value' requires eval.
         std::string name = a.attribute("canonical");
         std::string value = a.attribute("value");
+        
+        // Check if we're in interval context and this is an interval attribute
+        bool in_interval_context = !Context::getContext().cli2._interval_ids.empty();
+        bool is_interval_attr = (name == "start" || name == "stop" || name == "end");
+        
+        if (in_interval_context && is_interval_attr) {
+          // Check if this task has an interval ID
+          auto it = Context::getContext().cli2._interval_ids.find(id);
+          if (it != Context::getContext().cli2._interval_ids.end()) {
+            // Interval modification already handled in CmdModify, skip here
+            continue;
+          }
+        }
+        
+        // If not in interval context, handle stop: as error
+        if (!in_interval_context && name == "stop") {
+          throw std::string("The 'stop' attribute is not valid for tasks. Use 'task <id>.<interval-id> modify stop:...' to modify an interval, or use 'task stop' command to stop a task.");
+        }
+        
         if (value == "" || value == "''" || value == "\"\"") {
           // Special case: Handle bulk removal of 'tags' and 'depends" virtual
           // attributes

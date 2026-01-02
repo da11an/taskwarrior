@@ -138,6 +138,7 @@ set (pythonTests
   import.test.py
   import-v2.test.py
   info.test.py
+  interval.test.py
   limit.test.py
   list.all.projects.test.py
   log.test.py

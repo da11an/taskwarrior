@@ -119,6 +119,7 @@ class CLI2 {
 
   std::vector<std::pair<std::string, std::string>> _id_ranges{};
   std::vector<std::string> _uuid_list{};
+  std::map<int, int> _interval_ids{};  // Map from task ID to interval ID
   std::string _command{""};
   bool _context_added{false};
 };

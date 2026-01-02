@@ -234,8 +234,29 @@ mod ffi {
             start_time: i64,
             end_time: i64,
         ) -> Result<Vec<WorkInterval>>;
+
+        /// Update a specific event's timestamp in an interval
+        fn work_interval_update_timestamp(
+            taskdb_dir: String,
+            task_uuid: String,
+            interval_id: i32,
+            event_type: String,  // "start" or "stop"/"done"
+            new_timestamp: i64,
+        ) -> Result<()>;
+
+        /// Get all intervals across all tasks (for fill operation)
+        fn work_interval_get_all_intervals(taskdb_dir: String) -> Result<Vec<WorkInterval>>;
+
+        /// Fill an interval to meet neighbors
+        fn work_interval_fill(
+            taskdb_dir: String,
+            task_uuid: String,
+            interval_id: i32,
+            fill_type: String,  // "start", "stop", or "both"
+        ) -> Result<()>;
     }
 
+    #[derive(Clone)]
     struct WorkInterval {
         task_uuid: String,
         start_time: i64,
@@ -1125,6 +1146,284 @@ fn work_interval_get_intervals_by_date(
     }
     
     Ok(intervals)
+}
+
+fn work_interval_update_timestamp(
+    taskdb_dir: String,
+    task_uuid: String,
+    interval_id: i32,
+    event_type: String,
+    new_timestamp: i64,
+) -> Result<(), CppError> {
+    // Ensure table exists
+    work_interval_initialize(taskdb_dir.clone())?;
+    
+    let db_path = get_db_path(taskdb_dir.clone());
+    let conn = Connection::open(&db_path).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    // Validate event_type
+    if event_type != "start" && event_type != "stop" && event_type != "done" {
+        return Err(CppError(tc::Error::Other(anyhow!("Invalid event_type: must be 'start', 'stop', or 'done'"))));
+    }
+    
+    // For stop/done, we need to update the appropriate event
+    // If event_type is "stop", we'll update either "stop" or "done" events for this interval
+    let event_type_filter = if event_type == "stop" {
+        "('stop', 'done')"
+    } else {
+        "('start')"
+    };
+    
+    // Update the timestamp for the matching event
+    let rows_affected = conn.execute(
+        &format!(
+            "UPDATE work_intervals 
+             SET timestamp = ?1 
+             WHERE task_uuid = ?2 
+               AND interval_id = ?3 
+               AND event_type IN {}",
+            event_type_filter
+        ),
+        rusqlite::params![new_timestamp, task_uuid, interval_id],
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    if rows_affected == 0 {
+        return Err(CppError(tc::Error::Other(anyhow!(
+            "No matching interval event found for task_uuid={}, interval_id={}, event_type={}",
+            task_uuid, interval_id, event_type
+        ))));
+    }
+    
+    Ok(())
+}
+
+fn work_interval_get_all_intervals(
+    taskdb_dir: String,
+) -> Result<Vec<ffi::WorkInterval>, CppError> {
+    let db_path = get_db_path(taskdb_dir.clone());
+    let conn = Connection::open(&db_path).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    let mut intervals = Vec::new();
+    
+    // Query for completed intervals (start + stop/done pairs) across all tasks
+    let mut stmt = conn.prepare(
+        "SELECT start.task_uuid, start.timestamp, end.timestamp, end.event_type, start.interval_id
+         FROM work_intervals start
+         JOIN work_intervals end ON start.interval_id = end.interval_id 
+             AND start.task_uuid = end.task_uuid
+         WHERE start.event_type = 'start'
+           AND end.event_type IN ('stop', 'done')
+         ORDER BY start.timestamp ASC"
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    let rows = stmt.query_map([], |row| {
+        Ok(ffi::WorkInterval {
+            task_uuid: row.get(0)?,
+            start_time: row.get(1)?,
+            end_time: row.get(2)?,
+            event_type: row.get(3)?,
+            interval_id: row.get(4)?,
+            is_open: false,
+        })
+    }).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    for row in rows {
+        intervals.push(row.map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?);
+    }
+    
+    // Query for open intervals (start events without stop/done) across all tasks
+    let mut open_stmt = conn.prepare(
+        "SELECT start.task_uuid, start.timestamp, start.interval_id
+         FROM work_intervals start
+         LEFT JOIN work_intervals end ON start.interval_id = end.interval_id 
+             AND start.task_uuid = end.task_uuid 
+             AND end.event_type IN ('stop', 'done')
+         WHERE start.event_type = 'start'
+           AND end.id IS NULL
+         ORDER BY start.timestamp ASC"
+    ).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    
+    let open_rows = open_stmt.query_map([], |row| {
+        Ok(ffi::WorkInterval {
+            task_uuid: row.get(0)?,
+            start_time: row.get(1)?,
+            end_time: now,
+            event_type: String::new(),
+            interval_id: row.get(2)?,
+            is_open: true,
+        })
+    }).map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?;
+    
+    for row in open_rows {
+        intervals.push(row.map_err(|e| CppError(tc::Error::Other(anyhow!(e.to_string()))))?);
+    }
+    
+    Ok(intervals)
+}
+
+fn work_interval_fill(
+    taskdb_dir: String,
+    task_uuid: String,
+    interval_id: i32,
+    fill_type: String,
+) -> Result<(), CppError> {
+    // Ensure table exists
+    work_interval_initialize(taskdb_dir.clone())?;
+    
+    // Get the target interval
+    let mut target_interval: Option<ffi::WorkInterval> = None;
+    let all_intervals = work_interval_get_all_intervals(taskdb_dir.clone())?;
+    
+    for interval in &all_intervals {
+        if interval.task_uuid == task_uuid && interval.interval_id == interval_id {
+            target_interval = Some(interval.clone());
+            break;
+        }
+    }
+    
+    let target = target_interval.ok_or_else(|| {
+        CppError(tc::Error::Other(anyhow!(
+            "Interval with ID {} not found for task {}",
+            interval_id, task_uuid
+        )))
+    })?;
+    
+    // Find neighbors
+    let mut prev_interval: Option<&ffi::WorkInterval> = None;
+    let mut next_interval: Option<&ffi::WorkInterval> = None;
+    
+    for interval in &all_intervals {
+        // Skip the target interval itself
+        if interval.task_uuid == task_uuid && interval.interval_id == interval_id {
+            continue;
+        }
+        
+        // Find previous interval (ends before target starts)
+        let interval_end = if interval.is_open {
+            // For open intervals, use current time as end
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        } else {
+            interval.end_time
+        };
+        
+        if interval_end <= target.start_time {
+            let prev_end = if let Some(prev) = prev_interval {
+                if prev.is_open {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64
+                } else {
+                    prev.end_time
+                }
+            } else {
+                0
+            };
+            
+            if prev_interval.is_none() || interval_end > prev_end {
+                prev_interval = Some(interval);
+            }
+        }
+        
+        // Find next interval (starts after target ends)
+        if interval.start_time >= target.end_time {
+            if next_interval.is_none() || interval.start_time < next_interval.unwrap().start_time {
+                next_interval = Some(interval);
+            }
+        }
+    }
+    
+    // Apply fill based on fill_type
+    match fill_type.as_str() {
+        "start" => {
+            if let Some(prev) = prev_interval {
+                work_interval_update_timestamp(
+                    taskdb_dir,
+                    task_uuid.clone(),
+                    interval_id,
+                    "start".to_string(),
+                    prev.end_time,
+                )?;
+            } else {
+                return Err(CppError(tc::Error::Other(anyhow!(
+                    "No neighboring interval found for fill start operation"
+                ))));
+            }
+        }
+        "stop" => {
+            if let Some(next) = next_interval {
+                let stop_time = if next.is_open {
+                    // For open intervals, use current time
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64
+                } else {
+                    next.start_time
+                };
+                work_interval_update_timestamp(
+                    taskdb_dir,
+                    task_uuid.clone(),
+                    interval_id,
+                    "stop".to_string(),
+                    stop_time,
+                )?;
+            } else {
+                return Err(CppError(tc::Error::Other(anyhow!(
+                    "No neighboring interval found for fill stop operation"
+                ))));
+            }
+        }
+        "both" | "" => {
+            // Fill both start and stop
+            if let Some(prev) = prev_interval {
+                work_interval_update_timestamp(
+                    taskdb_dir.clone(),
+                    task_uuid.clone(),
+                    interval_id,
+                    "start".to_string(),
+                    prev.end_time,
+                )?;
+            }
+            if let Some(next) = next_interval {
+                let stop_time = if next.is_open {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64
+                } else {
+                    next.start_time
+                };
+                work_interval_update_timestamp(
+                    taskdb_dir,
+                    task_uuid.clone(),
+                    interval_id,
+                    "stop".to_string(),
+                    stop_time,
+                )?;
+            }
+            if prev_interval.is_none() && next_interval.is_none() {
+                return Err(CppError(tc::Error::Other(anyhow!(
+                    "No neighboring intervals found for fill both operation"
+                ))));
+            }
+        }
+        _ => {
+            return Err(CppError(tc::Error::Other(anyhow!(
+                "Invalid fill_type: must be 'start', 'stop', or 'both'"
+            ))));
+        }
+    }
+    
+    Ok(())
 }
 
 #[cfg(test)]

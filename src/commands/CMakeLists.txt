@@ -38,6 +38,7 @@ set (commands_SRCS Command.cpp        Command.h
                    CmdImportV2.cpp    CmdImportV2.h
                    CmdInfo.cpp        CmdInfo.h
                    CmdIntervals.cpp   CmdIntervals.h
+                   CmdFill.cpp        CmdFill.h
                    CmdLog.cpp         CmdLog.h
                    CmdLogo.cpp        CmdLogo.h
                    CmdModify.cpp      CmdModify.h
