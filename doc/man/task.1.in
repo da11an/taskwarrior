@@ -175,6 +175,59 @@ the specified month and year.  If the 'due' argument is provided, will show
 the starting month of the earliest due task.
 
 .TP
+.B task <filter> chart [timeline|calendar|project|task]
+Shows graphical visualizations of work intervals.  The chart command displays
+time spent on tasks using various visualization types.  All visualizations
+respect Taskwarrior filters and are read-only.  Is affected by the context.
+
+The default view is the timeline, which shows intervals as horizontal bars on
+a timeline, similar to a Gantt chart.  Each task or project gets a row, with
+intervals displayed as colored bars.
+
+Chart types:
+.RS
+.TP
+.B timeline
+Shows a daily timeline view with intervals displayed as horizontal bars.
+Each day is divided into 4-hour blocks (08:00, 12:00, 16:00, 20:00).  Days
+with no intervals show a minimal 6-character bar.  Days with intervals show
+at least two full 4-hour blocks including the occupied blocks with labels.
+Days with 3 or more occupied blocks show each occupied block in its entirety.
+.TP
+.B calendar
+Shows a calendar heatmap view with work duration per day, similar to GitHub
+contribution graphs.  Displays weeks in rows with weekdays as columns.  Each
+day shows intensity based on work duration using Unicode block characters.
+The legend shows duration thresholds: 0h, <1h, <2h, <3h, <4h, <5h, <6h, <7h,
+8h+.  Note: This differs from the 'calendar' command, which shows due dates,
+not work intervals.
+.TP
+.B project
+Shows time allocation by project using bar charts.  Displays projects with
+Unicode block character bars scaled to show relative time spent.  Shows
+duration and percentage for each project.  Includes a total duration at the
+bottom.  Default period is the last 30 days.
+.TP
+.B task
+Shows time allocation by task using bar charts.  Displays the top 20 tasks
+by time spent with Unicode block character bars.  Shows task ID, description
+(truncated to 40 characters), and duration.  Tasks are sorted by duration
+in descending order.
+.RE
+
+Examples:
+.RS
+.nf
+  task chart                    # Default: timeline view
+  task project:Home chart       # Filtered by project
+  task chart timeline           # Explicit timeline view
+  task chart calendar           # Calendar heatmap
+  task chart project            # Project time allocation
+  task chart task               # Task time allocation
+.fi
+.RE
+
+.TP
 .B task colors [<sample> | legend]
 Displays all possible colors, a named sample, or a legend containing all
 currently defined colors.
@@ -298,6 +351,26 @@ allowed values.  Also shows UDA usage and any orphan UDAs.
 .B task <filter> information
 Shows all data and metadata for the specified tasks.  This is the only means of
 displaying all aspects of a given task, including the change history.
+
+.TP
+.B task <filter> intervals
+Shows work intervals for matching tasks in a table format.  Displays interval
+ID (task ID and interval ID), task description, start time, end time,
+duration, and optional notes (start note, during note, end note).  For tasks
+without an index ID (completed or deleted tasks), the task ID is shown as "-".
+Is affected by the context.
+
+The intervals table shows all work intervals associated with the filtered tasks,
+allowing you to review time tracking data in detail.  Each interval represents
+a period of work on a task, with timestamps and optional notes.
+
+Example:
+.RS
+.nf
+  task 5 intervals              # Show intervals for task 5
+  task project:Home intervals   # Show intervals for Home project
+.fi
+.RE
 
 .TP
 .B task <filter> list
