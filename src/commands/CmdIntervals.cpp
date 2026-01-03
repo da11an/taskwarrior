@@ -82,8 +82,7 @@ int CmdIntervals::execute(std::string& output) {
   view.withColor(Context::getContext().color());
 
   // Header
-  view.add("ID", false);      // Right-align ID
-  view.add("Interval", false); // Right-align Interval ID
+  view.add("ID", false);      // Right-align ID (format: task.interval)
   view.add("Description");
   view.add("Start");
   view.add("End");
@@ -115,40 +114,56 @@ int CmdIntervals::execute(std::string& output) {
     for (const auto& interval : intervals) {
       int row = view.addRow();
       
-      // Set ID (column 0)
-      view.set(row, 0, task.identifier(true));
+      // Set ID (column 0) - format: task.interval
+      // For completed tasks (id == 0), use "-" as placeholder
+      std::string task_id_str;
+      if (task.id != 0) {
+        task_id_str = format("{1}", task.id);
+      } else {
+        // Use "-" for completed/deleted tasks (no longer active tasks)
+        task_id_str = "-";
+      }
+      view.set(row, 0, format("{1}.{2}", task_id_str, interval.interval_id));
       
-      // Set Interval ID (column 1)
-      view.set(row, 1, format("{1}", interval.interval_id));
-      
-      // Set Description (column 2) - 20 character snippet
+      // Set Description (column 1) - 20 character snippet
       std::string description = task.get("description");
       std::string short_desc;
-      if (utf8_width(description) > 20) {
-        short_desc = utf8_substr(description, 0, 20) + "...";
+      int desc_width = utf8_width(description);
+      if (desc_width > 20) {
+        // Truncate to fit exactly 20 characters: use 19 chars + 1 char for ellipsis
+        // The ellipsis uses the 20th character's space
+        short_desc = utf8_substr(description, 0, 19) + "…";  // Single ellipsis character
+        // Verify the total width is exactly 20
+        int short_width = utf8_width(short_desc);
+        if (short_width != 20) {
+          // Adjust if needed: truncate to (20 - ellipsis_width) characters
+          int ellipsis_width = utf8_width("…");
+          int target_length = 20 - ellipsis_width;
+          short_desc = utf8_substr(description, 0, target_length) + "…";
+        }
       } else {
         short_desc = description;
       }
-      view.set(row, 2, short_desc);
+      view.set(row, 1, short_desc);
       
-      // Format start time (column 3)
+      // Format start time (column 2)
       Datetime start_dt(interval.start_time);
-      view.set(row, 3, start_dt.toString(dateformat));
+      view.set(row, 2, start_dt.toString(dateformat));
       
-      // Format end time (column 4)
+      // Format end time (column 3)
       // For open intervals, show "ongoing" or current time
       if (interval.is_open) {
-        view.set(row, 4, "ongoing");
+        view.set(row, 3, "ongoing");
       } else {
         Datetime end_dt(interval.end_time);
-        view.set(row, 4, end_dt.toString(dateformat));
+        view.set(row, 3, end_dt.toString(dateformat));
       }
       
-      // Calculate and format duration (column 5)
+      // Calculate and format duration (column 4)
       time_t duration_sec = interval.duration();
       total_duration += duration_sec;
       Duration duration(duration_sec);
-      view.set(row, 5, duration.format());
+      view.set(row, 4, duration.format());
       
       // Collect all annotations within this interval
       // Annotations are stored as annotation_<timestamp>
@@ -218,10 +233,10 @@ int CmdIntervals::execute(std::string& output) {
         return result;
       };
       
-      // Set annotation columns (6, 7, 8)
-      view.set(row, 6, join_notes(start_notes));
-      view.set(row, 7, join_notes(during_notes));
-      view.set(row, 8, join_notes(end_notes));
+      // Set annotation columns (5, 6, 7)
+      view.set(row, 5, join_notes(start_notes));
+      view.set(row, 6, join_notes(during_notes));
+      view.set(row, 7, join_notes(end_notes));
     }
   }
 

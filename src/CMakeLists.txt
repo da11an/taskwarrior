@@ -21,6 +21,8 @@ add_library (task STATIC CLI2.cpp
                   Version.cpp
                   ViewTask.cpp
                   WorkInterval.cpp
+                  IntervalAggregator.cpp
+                  ChartRenderer.cpp
                   dependency.cpp
                   feedback.cpp
                   legacy.cpp
