@@ -80,9 +80,10 @@ class WorkInterval {
   // Modify an interval's start or stop time
   // attribute: "start", "stop", or "end" (end is alias for stop)
   static void modify_interval(const std::string& task_uuid,
-                             int interval_id,
-                             const std::string& attribute,
-                             time_t new_timestamp);
+                               int interval_id,
+                               const std::string& attribute,
+                               time_t new_timestamp,
+                               int task_id = 0);  // Optional task ID for error messages
 
   // Fill an interval to meet neighbors (task-agnostic)
   // fill_type: "start", "stop", or "both"

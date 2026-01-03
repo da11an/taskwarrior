@@ -160,60 +160,92 @@ std::string ChartRenderer::renderCalendarHeatmap(
     return "No data to display.\n";
   }
 
-  // Find max value for intensity scaling
-  time_t max_value = 0;
-  for (const auto& pair : daily_data) {
-    if (pair.second > max_value) max_value = pair.second;
-  }
-
-  if (max_value == 0) {
-    return "No time data to display.\n";
-  }
-
   // Get date range
   time_t now = time(nullptr);
   time_t start_time = now - (weeks * 7 * 24 * 60 * 60);
 
   std::stringstream out;
   out << "Calendar Heatmap (Last " << weeks << " Weeks)\n";
-  out << std::string(60, '=') << "\n";
-  out << "        Mon    Tue    Wed    Thu    Fri    Sat    Sun\n";
+  out << std::string(78, '=') << "\n";
+  // Align weekday labels with day blocks (each day is 5 chars: "  ░░░")
+  // Align weekday header with day blocks
+  // Week label is 7 chars + 2 spaces = 9 chars, then each day block is "  ░░░" (5 chars: 2 spaces + 3 blocks)
+  // The blocks (░) start at position 9 + 2 = 11, so "Mon" should start at position 11 to align with blocks
+  // Each weekday is 3 chars, with 2 spaces between them (matching the day block spacing)
+  out << "           Mon  Tue  Wed  Thu  Fri  Sat  Sun\n";
 
   // Find the Monday of the week containing start_time
   Datetime start_dt(start_time);
   int start_dow = start_dt.dayOfWeek();  // 0=Sunday, 1=Monday, ..., 6=Saturday
-  int days_to_monday = (start_dow == 0) ? 1 : (start_dow == 1 ? 0 : 8 - start_dow);
-  time_t week_start = start_time - (days_to_monday * 24 * 60 * 60);
+  // Convert to Monday=0, Tuesday=1, ..., Sunday=6
+  int monday_based_dow = (start_dow == 0) ? 6 : start_dow - 1;
+  time_t week_start = start_time - (monday_based_dow * 24 * 60 * 60);
   
   // Group by week
   time_t current_week_start = week_start;
   int week_num = 0;
   
   while (current_week_start < now && week_num < weeks) {
-    out << format("Week {1}  ", week_num + 1);
+    // Format week number with consistent padding (7 chars: "Week 1", "Week 10", etc.)
+    std::string week_label = format("Week {1}", week_num + 1);
+    // Pad to 7 characters to align with weekday header
+    if (week_label.length() < 7) {
+      week_label += std::string(7 - week_label.length(), ' ');
+    }
+    out << week_label << "  ";
     
     // For each day of week (Monday through Sunday)
     for (int day_offset = 0; day_offset < 7; ++day_offset) {
       time_t day_time = current_week_start + (day_offset * 24 * 60 * 60);
       
-      if (day_time >= start_time && day_time < now) {
-        // Get start of day
-        Datetime day_dt(day_time);
-        Datetime day_start(day_dt.year(), day_dt.month(), day_dt.day(), 0, 0, 0);
-        time_t day_epoch = day_start.toEpoch();
-        
+      // Get start of day (midnight) - use the same method as IntervalAggregator
+      // First normalize to midnight by creating Datetime and extracting date components
+      Datetime day_dt(day_time);
+      // Use toYMD to get local date components (accounts for timezone)
+      int year, month, day;
+      day_dt.toYMD(year, month, day);
+      Datetime day_start(year, month, day, 0, 0, 0);
+      time_t day_epoch = day_start.toEpoch();
+      
+      // Check if this day is within the range
+      // Use day_epoch for comparison, but allow days that overlap with the range
+      // A day is in range if its start (day_epoch) is before 'now' and its end is after start_time
+      time_t day_end_epoch = day_epoch + (24 * 60 * 60) - 1;  // End of day (23:59:59)
+      if (day_epoch < now && day_end_epoch >= start_time) {
         time_t day_value = 0;
-        if (daily_data.find(day_epoch) != daily_data.end()) {
-          day_value = daily_data.at(day_epoch);
+        // Try exact match first
+        auto it = daily_data.find(day_epoch);
+        if (it != daily_data.end()) {
+          day_value = it->second;
+        } else {
+          // Fallback: match by calendar date (handles timezone mismatches)
+          for (const auto& pair : daily_data) {
+            Datetime data_dt(pair.first);
+            if (data_dt.year() == day_dt.year() &&
+                data_dt.month() == day_dt.month() &&
+                data_dt.day() == day_dt.day()) {
+              day_value = pair.second;
+              break;
+            }
+          }
         }
         
-        // Calculate intensity (0.0 to 1.0)
-        double intensity = (double)day_value / max_value;
+        // Determine intensity level based on duration (as per plan)
+        // 0h = ░░░, 1-2h = ░█░, 3-4h = █░█, 5h+ = ███
+        std::string block_str;
+        if (day_value == 0) {
+          block_str = "░░░";
+        } else if (day_value < 2 * 3600) {  // Less than 2 hours
+          block_str = "░░█";
+        } else if (day_value < 4 * 3600) {  // 2-4 hours
+          block_str = "░█░";
+        } else if (day_value < 5 * 3600) {  // 4-5 hours
+          block_str = "█░░";
+        } else {  // 5+ hours
+          block_str = "███";
+        }
         
-        // Use ASCII block characters for better terminal compatibility
-        char block = getBlockChar(intensity);
-        char ascii_block = (block == '█') ? '#' : (block == '▓') ? '=' : (block == '▒') ? '-' : (block == '░') ? '.' : ' ';
-        out << "  " << ascii_block << ascii_block << ascii_block;
+        out << "  " << block_str;
       } else {
         out << "     ";
       }
@@ -224,7 +256,17 @@ std::string ChartRenderer::renderCalendarHeatmap(
     current_week_start += 7 * 24 * 60 * 60;  // Move to next Monday
   }
 
-  out << "\nLegend: ... = 0-25%  --- = 25-50%  === = 50-75%  ### = 75-100%\n";
+  out << "\nLegend: ░░░ = 0h  ░░█ = 1-2h  ░█░ = 2-4h  █░░ = 4-5h  ███ = 5h+\n";
+  
+  // Calculate and display total time
+  time_t total_time = 0;
+  for (const auto& pair : daily_data) {
+    total_time += pair.second;
+  }
+  if (total_time > 0) {
+    Duration total_dur(total_time);
+    out << "Total: " << total_dur.format() << "\n";
+  }
   
   return out.str();
 }

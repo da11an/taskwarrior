@@ -157,7 +157,8 @@ std::vector<Interval> WorkInterval::get_intervals_by_date(time_t start_time,
 void WorkInterval::modify_interval(const std::string& task_uuid,
                                    int interval_id,
                                    const std::string& attribute,
-                                   time_t new_timestamp) {
+                                   time_t new_timestamp,
+                                   int task_id) {
   ensure_table_exists();
 
   // Validate attribute
@@ -192,11 +193,19 @@ void WorkInterval::modify_interval(const std::string& task_uuid,
   if (event_type == "start") {
     new_start = new_timestamp;
     // Check overlap with previous interval
+    // Two intervals overlap if: interval1.start < interval2.end AND interval2.start < interval1.end
     for (const auto& interval : intervals) {
-      if (interval.interval_id != interval_id && !interval.is_open && interval.end_time > new_start) {
-        if (interval.start_time < new_start) {
+      if (interval.interval_id != interval_id) {
+        // Check if intervals would overlap
+        time_t other_start = interval.start_time;
+        time_t other_end = interval.is_open ? time(nullptr) : interval.end_time;
+        
+        // Overlap occurs if: new_start < other_end AND other_start < new_end
+        if (new_start < other_end && other_start < new_end) {
+          // Format error message with task ID if available, otherwise use UUID
+          std::string task_identifier = (task_id > 0) ? format("{1}", task_id) : task_uuid;
           throw std::string(format("Cannot modify interval: would create overlap with interval {1}.{2}",
-                                   task_uuid, interval.interval_id));
+                                   task_identifier, interval.interval_id));
         }
       }
     }
@@ -210,11 +219,19 @@ void WorkInterval::modify_interval(const std::string& task_uuid,
     // If modifying stop time of open interval, it becomes closed
     is_open = false;
     // Check overlap with next interval
+    // Two intervals overlap if: interval1.start < interval2.end AND interval2.start < interval1.end
     for (const auto& interval : intervals) {
-      if (interval.interval_id != interval_id && interval.start_time < new_end) {
-        if (!interval.is_open || interval.start_time > new_start) {
+      if (interval.interval_id != interval_id) {
+        // Check if intervals would overlap
+        time_t other_start = interval.start_time;
+        time_t other_end = interval.is_open ? time(nullptr) : interval.end_time;
+        
+        // Overlap occurs if: new_start < other_end AND other_start < new_end
+        if (new_start < other_end && other_start < new_end) {
+          // Format error message with task ID if available, otherwise use UUID
+          std::string task_identifier = (task_id > 0) ? format("{1}", task_id) : task_uuid;
           throw std::string(format("Cannot modify interval: would create overlap with interval {1}.{2}",
-                                   task_uuid, interval.interval_id));
+                                   task_identifier, interval.interval_id));
         }
       }
     }

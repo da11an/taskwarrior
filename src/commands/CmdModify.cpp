@@ -215,8 +215,8 @@ int CmdModify::execute(std::string&) {
                   }
                 }
                 
-                // Apply interval modification
-                WorkInterval::modify_interval(task_uuid, interval_id, name, timestamp);
+                // Apply interval modification (pass task_id for better error messages)
+                WorkInterval::modify_interval(task_uuid, interval_id, name, timestamp, task_id);
                 feedback_affected(format("Modified interval {1}.{2} {3} time.", task_id, interval_id, name));
               } catch (const std::string& e) {
                 throw e;

@@ -199,8 +199,13 @@ int CmdChart::execute(std::string& output) {
     }
     
   } else if (chart_type == "calendar") {
-    // Calendar heatmap
-    auto daily_data = IntervalAggregator::aggregateByDate(filtered, range);
+    // Calendar heatmap - use 12 weeks range
+    DateRange calendar_range;
+    time_t end_time = time(nullptr);
+    time_t start_time = end_time - (12 * 7 * 24 * 60 * 60);  // 12 weeks ago
+    calendar_range.start = start_time;
+    calendar_range.end = end_time;
+    auto daily_data = IntervalAggregator::aggregateByDate(filtered, calendar_range);
     out << ChartRenderer::renderCalendarHeatmap(daily_data, 12);
     
   } else if (chart_type == "cumulative") {
