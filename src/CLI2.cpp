@@ -1391,7 +1391,7 @@ void CLI2::findIDs() {
                 _id_ranges.emplace_back(task_id_str, task_id_str);
               } else {
                 // Invalid format, treat as regular ID
-                _id_ranges.emplace_back(number, number);
+            _id_ranges.emplace_back(number, number);
               }
             } else {
               _id_ranges.emplace_back(number, number);
@@ -1422,11 +1422,11 @@ void CLI2::findIDs() {
                 }
               } else {
                 // Invalid format, check for regular range
-                auto hyphen = element.find('-');
-                if (hyphen != std::string::npos)
-                  _id_ranges.emplace_back(element.substr(0, hyphen), element.substr(hyphen + 1));
-                else
-                  _id_ranges.emplace_back(element, element);
+            auto hyphen = element.find('-');
+            if (hyphen != std::string::npos)
+              _id_ranges.emplace_back(element.substr(0, hyphen), element.substr(hyphen + 1));
+            else
+              _id_ranges.emplace_back(element, element);
               }
             } else {
               // No dot, check for regular range
@@ -1471,7 +1471,7 @@ void CLI2::findIDs() {
                 _id_ranges.emplace_back(task_id_str, task_id_str);
               } else {
                 // Invalid format, treat as regular ID
-                _id_ranges.emplace_back(raw, raw);
+            _id_ranges.emplace_back(raw, raw);
               }
             } else {
               _id_ranges.emplace_back(raw, raw);
@@ -1496,11 +1496,11 @@ void CLI2::findIDs() {
                   _id_ranges.emplace_back(task_id_str, task_id_str);
                 } else {
                   // Invalid format, check for regular range
-                  auto hyphen = element.find('-');
-                  if (hyphen != std::string::npos)
-                    _id_ranges.emplace_back(element.substr(0, hyphen), element.substr(hyphen + 1));
-                  else
-                    _id_ranges.emplace_back(element, element);
+              auto hyphen = element.find('-');
+              if (hyphen != std::string::npos)
+                _id_ranges.emplace_back(element.substr(0, hyphen), element.substr(hyphen + 1));
+              else
+                _id_ranges.emplace_back(element, element);
                 }
               } else {
                 // No dot, check for regular range

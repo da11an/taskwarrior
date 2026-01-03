@@ -2077,8 +2077,8 @@ void Task::modify(modType type, bool text_required /* = false */) {
         
         // Only accumulate if it's not a message value
         if (!is_message_value) {
-          if (text != "") text += ' ';
-          text += a.attribute("raw");
+        if (text != "") text += ' ';
+        text += a.attribute("raw");
         }
       }
     }

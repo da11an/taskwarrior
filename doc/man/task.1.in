@@ -962,6 +962,16 @@ numbers, UUID numbers and ID ranges.  When prefixing any element of this list
 by '-', the specified tasks are removed from the dependency list.
 
 .TP
+.B prerequisite:<id1,id2 ...>
+Declares this task to be a prerequisite for id1 and id2.  This means that
+this task should be completed before tasks id1 and id2.  This is the reverse
+of the depends: attribute - when you set prerequisite:5 on a task, it
+automatically adds this task to task 5's dependency list.  It accepts a
+comma-separated list of ID numbers, UUID numbers and ID ranges.  When
+prefixing any element of this list by '-', the specified tasks are removed
+from the prerequisite list.
+
+.TP
 .B entry:<entry-date>
 For report purposes, specifies the date that a task was created.
 

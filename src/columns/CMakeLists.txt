@@ -8,6 +8,7 @@ include_directories (${CMAKE_SOURCE_DIR}
 
 set (columns_SRCS Column.cpp Column.h
                   ColDepends.cpp ColDepends.h
+                  ColPrerequisite.cpp ColPrerequisite.h
                   ColDescription.cpp ColDescription.h
                   ColDue.cpp ColDue.h
                   ColEnd.cpp ColEnd.h
@@ -33,7 +34,7 @@ set (columns_SRCS Column.cpp Column.h
                   ColUntil.cpp ColUntil.h
                   ColUrgency.cpp ColUrgency.h
                   ColUDA.cpp ColUDA.h
-                   ColUUID.cpp ColUUID.h
+                  ColUUID.cpp ColUUID.h
                    ColWait.cpp ColWait.h
                    ColWorkDuration.cpp ColWorkDuration.h)
 

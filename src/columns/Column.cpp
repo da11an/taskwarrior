@@ -38,6 +38,7 @@
 #include <ColMask.h>
 #include <ColModified.h>
 #include <ColParent.h>
+#include <ColPrerequisite.h>
 #include <ColProject.h>
 #include <ColRType.h>
 #include <ColRecur.h>
@@ -81,6 +82,8 @@ Column* Column::factory(const std::string& name, const std::string& report) {
   Column* c;
   if (column_name == "depends")
     c = new ColumnDepends();
+  else if (column_name == "prerequisite")
+    c = new ColumnPrerequisite();
   else if (column_name == "description")
     c = new ColumnDescription();
   else if (column_name == "due")
@@ -166,6 +169,8 @@ void Column::factory(std::map<std::string, Column*>& all) {
   c = new ColumnModified();
   all[c->_name] = c;
   c = new ColumnParent();
+  all[c->_name] = c;
+  c = new ColumnPrerequisite();
   all[c->_name] = c;
   c = new ColumnProject();
   all[c->_name] = c;
