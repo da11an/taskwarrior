@@ -100,24 +100,48 @@ std::string ChartRenderer::renderBarChart(
     return "No time data to display.\n";
   }
 
-  // Calculate bar width (leave space for labels)
+  // Calculate bar width (leave space for labels and right-aligned text)
   int max_label_width = 0;
+  int max_value_width = 0;
+  int max_percentage_width = 0;
+  
   for (const auto& bar : data) {
     int label_width = utf8_width(bar.label);
     if (label_width > max_label_width) max_label_width = label_width;
+    
+    // Calculate max width for value and percentage
+    std::string value_str = formatDuration(bar.value);
+    int value_width = utf8_width(value_str);
+    if (value_width > max_value_width) max_value_width = value_width;
+    
+    if (show_percentages && total > 0) {
+      double percentage = (double)bar.value / total * 100.0;
+      std::string pct_str = format("({1}%)", (int)percentage);
+      int pct_width = utf8_width(pct_str);
+      if (pct_width > max_percentage_width) max_percentage_width = pct_width;
+    }
   }
 
-  int bar_width = width - max_label_width - 20;  // Leave space for value/percentage
+  // Calculate fixed position for value text (left-aligned)
+  int value_start_pos = width - max_percentage_width - max_value_width - 4;  // Leave 4 spaces for spacing
+  int bar_width = value_start_pos - max_label_width - 4;  // Leave 4 spaces after label
   if (bar_width < 10) bar_width = 10;
 
   std::stringstream out;
+  
+  // Use a slightly shorter Unicode block character for bars
+  // Using LOWER THREE QUARTERS BLOCK (▆) which is slightly shorter than FULL BLOCK
+  const std::string bar_char = "▆";  // LOWER THREE QUARTERS BLOCK (U+2586)
   
   for (const auto& bar : data) {
     // Calculate bar length
     int bar_length = (int)((double)bar.value / max_value * bar_width);
     
-    // Build bar string (use '#' for ASCII compatibility)
-    std::string bar_str(bar_length, '#');
+    // Build bar string using Unicode block character (same as calendar heatmap)
+    std::string bar_str;
+    for (int i = 0; i < bar_length; ++i) {
+      bar_str += bar_char;
+    }
     
     // Format label (pad to max_label_width)
     std::string label = bar.label;
@@ -129,13 +153,27 @@ std::string ChartRenderer::renderBarChart(
     // Format value
     std::string value_str = formatDuration(bar.value);
     
-    // Build line
-    std::string line = label + "  " + bar_str;
+    // Calculate spacing to align value at fixed position
+    // Format: "Label    ████...  XXh XXm  (XX%)"
+    // All values should start at the same column (value_start_pos)
+    int current_line_width = max_label_width + 4 + bar_length;  // label + 4 spaces + bar
+    int padding_needed = value_start_pos - current_line_width;
+    if (padding_needed > 0) {
+      bar_str += std::string(padding_needed, ' ');
+    }
     
-    // Add percentage if requested
+    // Build line
+    std::string line = label + "    " + bar_str;
+    
+    // Add value and percentage (left-aligned at fixed position)
     if (show_percentages && total > 0) {
       double percentage = (double)bar.value / total * 100.0;
-      line += "  " + value_str + format(" ({1}%)", (int)percentage);
+      // Pad value to max_value_width for alignment
+      int value_width = utf8_width(value_str);
+      if (value_width < max_value_width) {
+        value_str += std::string(max_value_width - value_width, ' ');
+      }
+      line += "  " + value_str + "  " + format("({1}%)", (int)percentage);
     } else {
       line += "  " + value_str;
     }
@@ -148,6 +186,15 @@ std::string ChartRenderer::renderBarChart(
     
     out << line << '\n';
   }
+  
+  // Add separator line before total (if showing percentages)
+  if (show_percentages && total > 0) {
+    out << std::string(width, '-') << "\n";
+  }
+  
+  // Add total
+  Duration total_dur(total);
+  out << "Total: " << total_dur.format() << "\n";
 
   return out.str();
 }

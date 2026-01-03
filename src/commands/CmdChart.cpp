@@ -120,8 +120,10 @@ int CmdChart::execute(std::string& output) {
                 return a.value > b.value;
               });
     
+    int chart_width = Context::getContext().getWidth();
     out << "Project Time Allocation (Last 30 Days)\n";
-    out << ChartRenderer::renderBarChart(bars, Context::getContext().getWidth(), true);
+    out << std::string(chart_width, '=') << "\n";
+    out << ChartRenderer::renderBarChart(bars, chart_width, true);
     
   } else if (chart_type == "task" || chart_type == "tasks") {
     // Task time allocation
