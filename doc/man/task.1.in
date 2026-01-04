@@ -524,6 +524,25 @@ Removes the
 .I start
 time from the specified task. Is affected by the context.
 
+.TP
+.B task <filter> switch [<mods>]
+Stops all currently active tasks and starts the specified task. This is a
+convenience command that combines stopping all active tasks and starting a
+new task into a single operation.
+
+If no tasks are currently active, this command behaves identically to
+.BR start "."
+
+If the specified task is already the only active task, no changes are made
+and a message is displayed. Is affected by the context.
+
+Examples:
+
+.nf
+    task 10 switch
+    task project:Work switch priority:H
+.fi
+
 .SH MISCELLANEOUS SUBCOMMANDS
 
 Miscellaneous subcommands either accept no command line arguments, or accept

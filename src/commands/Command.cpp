@@ -82,6 +82,7 @@
 #include <CmdStats.h>
 #include <CmdStop.h>
 #include <CmdSummary.h>
+#include <CmdSwitch.h>
 #include <CmdSync.h>
 #include <CmdTags.h>
 #include <CmdTimesheet.h>
@@ -227,6 +228,8 @@ void Command::factory(std::map<std::string, Command*>& all) {
   c = new CmdStop();
   all[c->keyword()] = c;
   c = new CmdSummary();
+  all[c->keyword()] = c;
+  c = new CmdSwitch();
   all[c->keyword()] = c;
   c = new CmdSync();
   all[c->keyword()] = c;
